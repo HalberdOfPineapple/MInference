@@ -293,6 +293,7 @@ def main(args):
     
     model_prefix = MODEL_ID_TO_PREFIX[args.model_id]
     pas_config = {
+        'parallel_profile': False,
         'recompute_modules': f'{model_prefix}DecoderLayer',
     }
     if args.mem_constraint > 0: pas_config['mem_constraint'] = args.mem_constraint

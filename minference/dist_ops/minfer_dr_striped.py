@@ -691,7 +691,6 @@ def minfer_dr_stripe_func(
             group,
         )
     else:
-        print(f"Rank {dist.get_rank()} | minfer_dr_stripe_func | Using Triton implementation for MTraining")
         return MInferDRStripeTritonFunc.apply(
             q, k, v,
             v_size, s_size,

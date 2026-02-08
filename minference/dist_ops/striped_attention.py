@@ -110,7 +110,6 @@ def stripe_flash_attn_backward(
     assert (
         causal
     ), "stripe flash attn only supports causal attention, if not causal, ring flash attn instead"
-    bsz, seq_len, num_heads, head_dim = q.shape
 
     kv_comm = RingComm(process_group)
     d_kv_comm = RingComm(process_group)

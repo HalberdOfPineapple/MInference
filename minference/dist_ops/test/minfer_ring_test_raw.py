@@ -164,12 +164,23 @@ def _run_worker(
 
         # ----------------- assertions ----------------------------------------
         if check_by_correct_rate(final_out, out_ref, ATOL=_ATOL, RTOL=_RTOL):
+            print(f"Test passed for forward output", flush=True)
             for got, ref, name in zip(
                 grads,
                 ref_grads,
                 ("Q-grad", "K-grad", "V-grad"),
             ):
-                check_by_correct_rate(got, ref, ATOL=_ATOL, RTOL=_RTOL)
+                if check_by_correct_rate(got, ref, ATOL=_ATOL, RTOL=_RTOL):
+                    print(f"Test passed for {name}", flush=True)
+                else:
+                    diff = (got - ref).abs()
+                    max_diff, min_diff, mean_diff = diff.max(), diff.min(), diff.mean()
+                    print(f"{name} mismatch with max_diff: {max_diff}, min_diff: {min_diff}, mean_diff: {mean_diff}", flush=True)
+        elif rank == 0:
+            # analyse the error 
+            diff = (final_out - out_ref).abs()
+            max_diff, min_diff, mean_diff = diff.max(), diff.min(), diff.mean()
+            print(f"Forward output mismatch with max_diff: {max_diff}, min_diff: {min_diff}, mean_diff: {mean_diff}", flush=True)
 
     dist.destroy_process_group()
 
@@ -224,7 +235,7 @@ if __name__ == "__main__":
         sparsity=0.9,
         ones=False,
         num_qo_heads=4,
-        num_kv_heads=2,
+        num_kv_heads=1,
         attn_op_name="minfer_zigzag",
         use_triton=True
     )

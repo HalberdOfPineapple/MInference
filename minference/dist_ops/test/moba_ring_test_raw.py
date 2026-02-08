@@ -201,7 +201,6 @@ if __name__ == "__main__":
         head_dim=128,
         ones=False,
         num_qkv_head_pair=(4, 1),
-
         moba_chunk_size=128,
         moba_topk=8,
     )

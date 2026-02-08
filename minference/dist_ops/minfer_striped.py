@@ -450,7 +450,6 @@ def minfer_stripe_func( # the one used for nnscaler training
             group,
         )
     else:
-        print(f"Rank {dist.get_rank()} | minfer_stripe_func | using Triton implementation for MTraining w. Striped Ring Attention")
         return MInferStripeTritonFunc.apply(
             q, k, v,
             v_size, s_size,

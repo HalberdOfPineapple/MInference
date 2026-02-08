@@ -1,5 +1,10 @@
 #!/usr/bin/bash
-echo $(which pip)
+
+
+# conda activate mtrain
+source /opt/conda/etc/profile.d/conda.sh
+conda activate mtrain
+
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i
 export NUM_NODES=1
@@ -12,53 +17,56 @@ export HF_DATASETS_TRUST_REMOTE_CODE=true
 export MASTER_ADDR="node-0"
 export MASTER_PORT="12345"
 
-export NNSCALER_HOME="/home/aiscuser/.conda/envs/mtrain/lib/python3.10/site-packages/nnscaler/autodist/"
+export NNSCALER_HOME="${HOME}/.conda/envs/mtrain/lib/python3.10/site-packages/nnscaler/"
 export PYTHONPATH="${NNSCALER_HOME}:${PYTHONPATH}"
 
 # -----------------------------------------------
 # TODO: Basic Environment Settings
 SEQUENCE_LENGTH=524288
 export GPU_NAME=A100
-export GPU_PER_NODE=4
-export WORLD_SIZE=4
+export GPU_PER_NODE=8
+export WORLD_SIZE=8
 export GPU_SET="${GPU_NAME}_${WORLD_SIZE}"
-export EXPR_HOME="/scratch/MInference/mtraining"
-export NNSCALER_STORE="${EXPR_HOME}/experiments/expr_data_store/${GPU_SET}"
-mkdir -p $NNSCALER_STORE
+
+export SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export EXPR_HOME="$(cd "${SCRIPT_DIR}/../.." && pwd)" # .../mtraining
+export EXPR_DATA_STORE="${EXPR_HOME}/experiments/expr_data_store/${GPU_SET}"
+mkdir -p $EXPR_DATA_STORE
 cd $EXPR_HOME
 
 # ------------------------------------------
-# /blob/nnscaler_store/MI300_8/minfer_qwen/qwen_fp090_512K_mini
 export EXPR_DIR="minfer_qwen" # Name for the experiment set
 export EXPR_NAME="qwen_fp090_512K_mini" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
-export DATASET_PATH="/scratch/nnscaler_store/prolong_fixed_filter_qwen_524288"
+export DATASET_PATH="${EXPR_HOME}/experiments/processed_datasets/long-context-524288"
 export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_mini"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
-export TRAIN_ATTN_CONFIG_PATH="/scratch/MInference/mtraining/experiments/train_attn_configs/qwen_flex_090.yaml"
+export TRAIN_ATTN_CONFIG_PATH="${EXPR_HOME}/experiments/train_attn_configs/qwen_flex_090.yaml"
 export ATTN_TYPE="minfer"
 
 # ------------------------------------------
 # Training Path settings
-export TF_LOG_PATH="$NNSCALER_STORE/$EXPR_DIR/tf_logs"
-export CKPT_PATH="$NNSCALER_STORE/$EXPR_DIR/$EXPR_NAME/checkpoints"
-export COMPILE_PATH="$NNSCALER_STORE/compile_config/rank_${NODE_RANK}"
+export TF_LOG_PATH="$EXPR_DATA_STORE/$EXPR_DIR/tf_logs"
+export CKPT_PATH="$EXPR_DATA_STORE/$EXPR_DIR/$EXPR_NAME/checkpoints"
+export COMPILE_PATH="$EXPR_DATA_STORE/compile_config/rank_${NODE_RANK}"
 mkdir -p $TF_LOG_PATH
 mkdir -p $CKPT_PATH
 mkdir -p $COMPILE_PATH
 
 # -------------------------------------------
 # Training Settings
+export TRACE_STRATEGY="reuse_cache"
+
 export GLOBAL_BATCH_SIZE=4 # TODO
 export MICRO_BATCH_SIZE=1
-export MEM_CONSTRAINT=72
+export MEM_CONSTRAINT=37
 
 export NUM_ITER=10
 export NUM_EPOCH=0
 
-export CKPT_SAVE_STEP=5
-export CKPT_SAVE_EPOCH=0
+export CKPT_SAVE_STEP=0
+export CKPT_SAVE_EPOCH=1
 
 export CHECK_RESUME=0
 if [ "$CHECK_RESUME" -eq 1 ]; then
@@ -69,12 +77,10 @@ fi
 
 # -------------------------------------------
 # Logging Path
-export LOG_PATH="${NNSCALER_STORE}/${EXPR_DIR}/${EXPR_NAME}/rank_${NODE_RANK}"
+export LOG_PATH="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/rank_${NODE_RANK}"
 mkdir -p $LOG_PATH
 echo "Logging directed to $LOG_PATH/train.log"
 
-export TRACE_STRATEGY="reuse_cache"
-echo $(which torchrun)
 torchrun --nproc_per_node=$GPU_PER_NODE \
         --nnodes=$NUM_NODES \
         --node_rank=$NODE_RANK \
@@ -103,3 +109,5 @@ torchrun --nproc_per_node=$GPU_PER_NODE \
                     --transfer_config_dir $TRANSFER_CONFIG_DIR \
                     --mem_constraint $MEM_CONSTRAINT \
                     $CHECK_RESUME > $LOG_PATH/train.log 2>&1
+
+echo "Log saved to $LOG_PATH/train.log"

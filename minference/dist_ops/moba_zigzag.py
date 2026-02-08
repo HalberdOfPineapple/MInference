@@ -554,7 +554,6 @@ def moba_zigzag_attn_bwd_step(
     )
     
 
-
     # -----------------------------------------------------------------------------------
     # here `x` only stands for a dimension (stack dimension for KV)
     moba_kv = rearrange(filtered_kv, "s x h d -> h s x d") # [H, K_S, 2, D ]

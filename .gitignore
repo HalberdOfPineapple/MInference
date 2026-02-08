@@ -404,6 +404,7 @@ needle
 results
 *.json
 *.jsonl
+
 .vscode/
 *.pt
 *.pkl
@@ -416,3 +417,8 @@ build/
 *.so
 dist
 *.eggs/
+
+
+
+!mtraining/model_configs/**/*.json
+mtraining/experiments/processed_datasets/

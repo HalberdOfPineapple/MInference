@@ -1,19 +1,18 @@
 import os
 import time
 import copy
-import torch
 import logging
 import pandas as pd
+
 from tqdm import tqdm
 from dataclasses import dataclass
 from datetime import timedelta
 from collections import defaultdict
 from dataclasses import asdict
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Union, Optional, Callable
 
+import torch
 import torch.distributed
-from torch.profiler import profile, ProfilerActivity
 
 import nnscaler
 from nnscaler.utils import accum_mode
@@ -103,12 +102,6 @@ def custom_train_step(
                 latencies.append(sample_time)
     
                 num_tokens = output[2] 
-                if rank == 0:
-                    print(
-                        f"| {__name__} | rank={rank} | iter_idx={iter_idx}, batch_idx={idx}, loss={output[1] / num_tokens:.4f},"
-                        f" num_tokens={num_tokens}, latency={sample_time:.4f}s"
-                    )
-
                 outputs.append(output)
             return outputs, latencies
 

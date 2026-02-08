@@ -210,5 +210,3 @@ def test_sparse_attention_kernels(
         nprocs=_WORLD_SIZE,
         join=True,
     )
-
-    os.environ['FORCE_TRITON'] = "0"

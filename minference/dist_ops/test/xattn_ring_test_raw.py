@@ -131,6 +131,8 @@ def _run_worker(
         tmp = [torch.empty_like(g) for _ in range(world_size)]
         dist.all_gather(tmp, g)
         grads.append(torch.cat(tmp, dim=1))
+    dist.barrier()
+    torch.cuda.synchronize()
 
     # ---------------------------------------
     if rank == 0:
