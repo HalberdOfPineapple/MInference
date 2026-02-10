@@ -1273,7 +1273,9 @@ class MInferenceAttnFunc(torch.autograd.Function):
         if softmax_scale is None:
             softmax_scale = head_dim ** (-0.5)
 
-        block_mask, bar_idx, bar_cnt = build_index_local(q, k, v_size, s_size, num_tokens, granularity)
+        block_mask, bar_idx, bar_cnt = build_index_local(
+            q, k, v_size, s_size, num_tokens, granularity
+        )
 
         # Block Mask
         out, softmax_lse = block_attn_fwd(

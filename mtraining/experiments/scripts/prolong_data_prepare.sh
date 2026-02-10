@@ -12,18 +12,13 @@ PROJECT_ROOT="$(cd "${BASE_DIR}/.." && pwd)"
 source /opt/conda/etc/profile.d/conda.sh
 conda activate mtrain
 
-# # Ensure mtraining package is discoverable (parent of mtraining dir)
-# export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
-# echo $PROJECT_ROOT
-
 # ------------------------------------------
 # Download data
 # Prerequisite: sudo apt-get install git-lfs && git lfs install
-# RAW_DATASET_DIR="/path/to/datasets"
-RAW_DATASET_DIR="/scratch/datasets"
+RAW_DATASET_DIR="/scratch/datasets" # "/path/to/datasets"
 mkdir -p $RAW_DATASET_DIR
 
-# git clone https://huggingface.co/datasets/princeton-nlp/prolong-data-512K $RAW_DATASET_DIR/long-context-524288
+git clone https://huggingface.co/datasets/princeton-nlp/prolong-data-512K $RAW_DATASET_DIR/long-context-524288
 cd $RAW_DATASET_DIR/long-context-524288
 git lfs fetch
 git lfs checkout

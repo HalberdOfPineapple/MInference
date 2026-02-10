@@ -1,19 +1,6 @@
-# tests/test_minference_sparse_attention.py
-"""
-Distributed correctness tests for Minference sparse-attention kernels.
-
-Run with:
-    pytest -q -s tests/test_minference_sparse_attention.py
-or manually choose GPUs, e.g.
-    CUDA_VISIBLE_DEVICES=0,1 pytest -q -s …
-
-The test spawns one process per GPU with torch.multiprocessing, so it does
-**not** require `pytest-xdist`.  It will be skipped automatically if you have
-fewer than two visible CUDA devices.
-"""
+"""Standalone distributed correctness checks for Minference raw kernels."""
 from __future__ import annotations
 
-import os
 import random
 from types import SimpleNamespace
 from typing import Callable
@@ -22,7 +9,15 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from minference.ops.utils import set_seed, check_correctness_by_row, check_by_correct_rate
+from minference.ops.utils import set_seed
+from minference.dist_ops.test.raw_test_utils import (
+    SEED_BASE,
+    check_forward_and_qkv_grads,
+    create_full_inputs,
+    gather_sequence_shards,
+    init_process_group,
+    slice_local_inputs,
+)
 from minference.dist_ops.minfer_zigzag import minfer_zigzag_func
 from minference.dist_ops.minfer_striped import minfer_stripe_func
 from minference.dist_ops.minfer_dr_striped import minfer_dr_stripe_func
@@ -39,22 +34,6 @@ _ATTENTION_IMPLS: dict[str, Callable] = {
     "minfer_dr_stripe": minfer_dr_stripe_func,
 }
 
-# ------------- helpers --------------------------------------------------------
-def _init_process_group(rank: int, world_size: int, port: str) -> None:
-    """Initialise NCCL backend for the current worker."""
-    os.environ.update(
-        {
-            "MASTER_ADDR": "127.0.0.1",
-            "MASTER_PORT": port,
-            "RANK": str(rank),
-            "WORLD_SIZE": str(world_size),
-            "LOCAL_RANK": str(rank % min(world_size, torch.cuda.device_count())),
-            "LOCAL_WORLD_SIZE": str(min(world_size, torch.cuda.device_count())),
-        }
-    )
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
-
 
 def _run_worker(
     rank: int,
@@ -64,64 +43,19 @@ def _run_worker(
     attn_op_name: str,
 ) -> None:
     """Worker function executed in every spawned GPU process."""
-    _init_process_group(rank, world_size, port)
+    init_process_group(rank, world_size, port)
 
-    # Short-hand variables
     device = torch.device(f"cuda:{rank}")
     torch.cuda.set_device(device)
     dtype = torch.bfloat16
-    set_seed(2025 + rank)
+    set_seed(SEED_BASE + rank)
 
     attn_op: Callable = _ATTENTION_IMPLS[attn_op_name]
 
-    # ----------------- generate identical tensors on every rank --------------
-    if rank == 0:
-        rand_or_one = (
-            torch.randn if not cfg.ones else lambda s, **k: torch.ones(*s, **k)
-        )
-        q = rand_or_one(
-            (cfg.batch_size, cfg.seq_len, cfg.num_qo_heads, cfg.head_dim),
-            dtype=dtype,
-            device=device,
-        )
-        k = rand_or_one(
-            (cfg.batch_size, cfg.seq_len, cfg.num_kv_heads, cfg.head_dim),
-            dtype=dtype,
-            device=device,
-        )
-        v = rand_or_one(
-            (cfg.batch_size, cfg.seq_len, cfg.num_kv_heads, cfg.head_dim),
-            dtype=dtype,
-            device=device,
-        )
-        dout = rand_or_one(
-            (cfg.batch_size, cfg.seq_len, cfg.num_qo_heads, cfg.head_dim),
-            dtype=dtype,
-            device=device,
-        )
-    else:
-        # placeholders that will be overwritten by broadcast
-        shape_q = (cfg.batch_size, cfg.seq_len, cfg.num_qo_heads, cfg.head_dim)
-        shape_kv = (cfg.batch_size, cfg.seq_len, cfg.num_kv_heads, cfg.head_dim)
-        q = torch.empty(shape_q, device=device, dtype=dtype)
-        k = torch.empty(shape_kv, device=device, dtype=dtype)
-        v = torch.empty(shape_kv, device=device, dtype=dtype)
-        dout = torch.empty(shape_q, device=device, dtype=dtype)
-
-    # Make every rank see the same data
-    dist.broadcast(q, src=0)
-    dist.broadcast(k, src=0)
-    dist.broadcast(v, src=0)
-    dist.broadcast(dout, src=0)
-
-    # ----------------- slice local context -----------------------------------
-    local_ctx = cfg.seq_len // world_size
-    sl = slice(rank * local_ctx, (rank + 1) * local_ctx)
-
-    q_local = q[:, sl].clone().detach().requires_grad_()
-    k_local = k[:, sl].clone().detach().requires_grad_()
-    v_local = v[:, sl].clone().detach().requires_grad_()
-    dout_local = dout[:, sl].clone()
+    q, k, v, dout = create_full_inputs(rank, cfg, device, dtype)
+    q_local, k_local, v_local, dout_local = slice_local_inputs(
+        rank, world_size, q, k, v, dout
+    )
 
     # ----------------- forward / backward on the candidate kernel ------------
     out_local = attn_op(
@@ -134,23 +68,22 @@ def _run_worker(
     )
     torch.autograd.backward(out_local, dout_local)
 
-    # ----------------- gather outputs & grads for reference comparison -------
-    out_gather = [torch.empty_like(out_local) for _ in range(world_size)]
-    dist.all_gather(out_gather, out_local)
-    final_out = torch.cat(out_gather, dim=1)
+    final_out = gather_sequence_shards(out_local, world_size)
+    grads = tuple(
+        gather_sequence_shards(grad, world_size)
+        for grad in (q_local.grad, k_local.grad, v_local.grad)
+    )
+    torch.distributed.barrier()
+    torch.cuda.synchronize()
 
-    grads = []
-    for g in (q_local.grad, k_local.grad, v_local.grad):
-        tmp = [torch.empty_like(g) for _ in range(world_size)]
-        dist.all_gather(tmp, g)
-        grads.append(torch.cat(tmp, dim=1))
-
-    # ----------------- reference: dense Flash-Attention ----------------------
+    # ----------------- reference: single machine MInference Forward/Backward  ----------------------
     if rank == 0:
+        print(f"Rank {rank} | Running reference forward/backward", flush=True)
         q_ref = q.detach().clone().requires_grad_()
         k_ref = k.detach().clone().requires_grad_()
         v_ref = v.detach().clone().requires_grad_()
 
+        print(f"Rank {rank} | Running reference forward with q_ref.shape={q_ref.shape}, k_ref.shape={k_ref.shape}, v_ref.shape={v_ref.shape}", flush=True)
         out_ref = minference_flash_attn_func(
             q_ref,
             k_ref,
@@ -159,34 +92,24 @@ def _run_worker(
             cfg.s_size,
             causal=True,
         )
+
         torch.autograd.backward(out_ref, dout)
         ref_grads = (q_ref.grad, k_ref.grad, v_ref.grad)
 
-        # ----------------- assertions ----------------------------------------
-        if check_by_correct_rate(final_out, out_ref, ATOL=_ATOL, RTOL=_RTOL):
-            print(f"Test passed for forward output", flush=True)
-            for got, ref, name in zip(
-                grads,
-                ref_grads,
-                ("Q-grad", "K-grad", "V-grad"),
-            ):
-                if check_by_correct_rate(got, ref, ATOL=_ATOL, RTOL=_RTOL):
-                    print(f"Test passed for {name}", flush=True)
-                else:
-                    diff = (got - ref).abs()
-                    max_diff, min_diff, mean_diff = diff.max(), diff.min(), diff.mean()
-                    print(f"{name} mismatch with max_diff: {max_diff}, min_diff: {min_diff}, mean_diff: {mean_diff}", flush=True)
-        elif rank == 0:
-            # analyse the error 
-            diff = (final_out - out_ref).abs()
-            max_diff, min_diff, mean_diff = diff.max(), diff.min(), diff.mean()
-            print(f"Forward output mismatch with max_diff: {max_diff}, min_diff: {min_diff}, mean_diff: {mean_diff}", flush=True)
+        check_forward_and_qkv_grads(
+            cfg.seq_len,
+            final_out,
+            out_ref,
+            grads,
+            ref_grads,
+            atol=_ATOL,
+            rtol=_RTOL,
+        )
 
     dist.destroy_process_group()
 
 
-# ------------- pytest entry-point --------------------------------------------
-def test_sparse_attention_kernels(
+def run_minfer_kernel_test(
     seq_len: int,
     batch_sz: int,
     head_dim: int,
@@ -195,12 +118,8 @@ def test_sparse_attention_kernels(
     num_qo_heads: int,
     num_kv_heads: int,
     attn_op_name: str,
-    use_triton: bool,
 ):
-    """
-    Compare every sparse kernel against the dense Flash-Attention reference on
-    both forward pass and input-gradient w.r.t Q/K/V.
-    """
+    """Compare a distributed Minference kernel against dense reference outputs."""
     port = str(random.randint(12000, 20000))
 
     cfg = SimpleNamespace(
@@ -216,9 +135,9 @@ def test_sparse_attention_kernels(
     cfg.v_size = [int((1 - cfg.sparsity) * 0.1 * cfg.seq_len)] * cfg.num_qo_heads
     cfg.s_size = [int((1 - cfg.sparsity) * 0.2 * cfg.seq_len)] * cfg.num_qo_heads
 
-    print(f"=" * 80)
+    print("=" * 80)
     print(f"Testing {attn_op_name} with configuration:\n{cfg}")
-    print(f"=" * 80)
+    print("=" * 80)
     mp.spawn(
         _run_worker,
         args=(_WORLD_SIZE, port, cfg, attn_op_name),
@@ -227,8 +146,7 @@ def test_sparse_attention_kernels(
     )
 
 if __name__ == "__main__":
-    # Run the test with default parameters
-    test_sparse_attention_kernels(
+    run_minfer_kernel_test(
         seq_len=512 * 1024,
         batch_sz=1,
         head_dim=128,
@@ -236,6 +154,5 @@ if __name__ == "__main__":
         ones=False,
         num_qo_heads=4,
         num_kv_heads=1,
-        attn_op_name="minfer_zigzag",
-        use_triton=True
+        attn_op_name="minfer_stripe",
     )
