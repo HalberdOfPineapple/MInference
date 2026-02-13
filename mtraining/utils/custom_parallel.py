@@ -79,8 +79,6 @@ def transfer_metadata(out_dir, transfer_config: Dict[str, Any]):
         transfer_config_dir = transfer_config_dir.replace("compile_config/", "compile_config/rank_0/")
     assert os.path.exists(transfer_config_dir), f"Source directory {transfer_config_dir} for transferring does not exist"
 
-    # transfer files in src_dir with postfix not being .py by executing `cp`
-    print(f"{__name__} | Transfering files from {transfer_config_dir} to {out_dir} (local_rank={os.getenv('LOCAL_RANK')})")
     for file in os.listdir(transfer_config_dir):
         if file in TRACE_FILE_EXTENSIONS or file.startswith(FxModuleParser.ATTR_CONTENT_FILE_STEM):
             src_file = os.path.join(transfer_config_dir, file)
@@ -262,84 +260,6 @@ def parallelize(
     broadcast_strategy: Union[str, BroadcastGenFilesStrategy] = 'none',
     transfer_config: Optional[Dict[str, Any]] = None,
 ) -> Union[None, ParallelModule, Type[ParallelModule]]:
-    """
-    Convert a torch.nn.Module object or class to ParallelModule object or class.
-
-    If you want to save multiple instances of the same module,
-    you can specify the instance_name to distinguish them.
-
-    Currently you must use a shared file system to share the generated files (like mounted Azure Blob)
-    Or you can unset load_module flag, and manually copy the generated files to other nodes.
-    After all nodes have the generated files, you can call parallelize() again with load_module flag set.
-
-    Note: if reuse is not set to ReuseType.MATCH,
-    the generated code in outdir will be removed EVEN IF the code generation fails in this call.
-
-    if the input is a module object.
-    * The module object will be copied to cpu to handle possible insufficient gpu memory.
-    * The training flag will be the same as the original module
-
-    This function can be used to convert both module object and module class to parallel module or parallel module class.
-    Among key-value arguments,
-    module_fn and module_dtype control how to create the module object.
-    whereas init_module_params controls how to load parallel module object after conversion is done.
-
-    1. If the input is a module object, it will return a ParallelModule object if load_module is True.
-       This is useful when the module is created by a factory function.
-
-       a. module_fn is ignored.
-       b. module_dtype is used to control the dtype of the input module.
-       c. init_module_params is used to control whether to initialize the parallel module parameters when load it.
-
-    2. If the input is a module class, it will return a ParallelModule sub class if load_module is True.
-
-       a. module_fn is used to create the module object, or module's__init__ if not prent.
-       b. module_dtype is used to control the dtype of the created module (by constructor or module_fn).
-          Of course, it can be merged into module_fn.
-       c. init_module_params is ignored.
-
-    After the module is converted, you can use it to create module object by calling it like a module class.
-    The module class is defined like:
-
-    ::
-
-        class GenModule(nnscaler.runtime.module.ParallelModule):
-            def __init__(self, init_params=True):
-                super().__init__()
-                ...
-            ...
-
-    So you can use `init_params` in `__init__` to control whether to initialize the module parameters.
-    For example, if you don't want to initialize module params:
-
-    ::
-
-        module = GenModule(init_params=False)
-
-    Args:
-        module_or_module_class (Union[torch.nn.Module, Type[torch.nn.Module]]): the module or module class to be compiled
-        dummy_forward_args (Dict[str, Any]): the dummy input for the module forward
-        pas_policy (Union[str, Callable[[IRGraph, ComputeConfig], IRGraph]]): the pas policy,
-            it can be a name of builtin policies, or a custom policy function.
-        compute_config (ComputeConfig): the environment resource
-        reuse (ReuseType): specify which part can be reused.
-        gen_savedir (Union[str, Path]): the directory to save generated code
-        instance_name (Optional[str]): the instance name of the generated module. If it is None, will use the default name.
-        load_module (bool): whether to load the generated module or module class after conversion is done.
-        init_module_params (bool): If true, when we construct the module, all its parameters are initialized with the same value with when we traced.
-            Otherwise, they will be empty tensor.
-            This parameter will be passed to the module constructor,
-            so it is only used when module_or_module_class is a module object, and load_module is true.
-        module_dtype (Optional[torch.dtype]): the dtype of the module. Keep the module as it is if it is None.
-        module_fn (Optional[Callable[[], torch.nn.Module]]): the function to create the module. Will use __init__ if it is None.
-        broadcast_strategy (Union[str, BroadcastGenFilesStrategy]): the broadcast strategy for generated files.
-            Please note that the broadcasting will only be done in torchrun environment,
-            and will throw an error if dist is not initialized and broadcast_strategy is not NONE.
-    Returns:
-        Union[ParallelModule, Type[ParallelModule], None]:
-            if load_module flag is set, return the converted ParallelModule object or class
-            if load_module flag is not set, return None
-    """
     if (
         isinstance(module_or_module_class, ParallelModule) or
         (inspect.isclass(module_or_module_class) and issubclass(module_or_module_class, ParallelModule))

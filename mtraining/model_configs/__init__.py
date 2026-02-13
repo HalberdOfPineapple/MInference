@@ -13,17 +13,20 @@ from .qwen2 import (
 
 MODEL_TO_ATTN_FUNC = {
     "microsoft/Phi-3-mini-4k-instruct": PHI_ATTN_FUNCS,
-    "Qwen/Qwen2.5-3B": QWEN_ATTN_FUNCS
+    "Qwen/Qwen2.5-3B": QWEN_ATTN_FUNCS,
+    "Qwen/Qwen2.5-0.5B": QWEN_ATTN_FUNCS
 }
 
 
 MODEL_ID_TO_MODEL_CLS = {
     "microsoft/Phi-3-mini-4k-instruct": Phi3ForCausalLM,
-    "Qwen/Qwen2.5-3B": Qwen2ForCausalLM
+    "Qwen/Qwen2.5-3B": Qwen2ForCausalLM,
+    "Qwen/Qwen2.5-0.5B": Qwen2ForCausalLM
 }
 
 MODEL_ID_TO_PREFIX = {
     "microsoft/Phi-3-mini-4k-instruct": "Phi3",
     "Qwen/Qwen2.5-3B": "Qwen2",
+    "Qwen/Qwen2.5-0.5B": "Qwen2",
 }
 
