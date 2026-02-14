@@ -37,14 +37,14 @@ mkdir -p $EXPR_DATA_STORE
 cd $EXPR_HOME
 
 # ------------------------------------------
-export EXPR_DIR="minfer_qwen" # Name for the experiment set
+export EXPR_DIR="mtrain_qwen" # Name for the experiment set
 export EXPR_NAME="qwen_05B_fp090_512K" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-0.5B"
 export DATASET_PATH="${EXPR_HOME}/experiments/processed_datasets/long-context-524288"
 export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_0_5B"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
-export TRAIN_ATTN_CONFIG_PATH="${EXPR_HOME}/experiments/train_attn_configs/qwen_05B_flex_090.yaml"
+export TRAIN_ATTN_CONFIG_PATH="${EXPR_HOME}/train_attn_configs/qwen_05B_flex_090.yaml"
 export ATTN_TYPE="minfer"
 
 # ------------------------------------------

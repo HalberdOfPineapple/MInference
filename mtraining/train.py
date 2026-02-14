@@ -33,7 +33,7 @@ from minference.configs.model2path import BASE_DIR as SPARSE_PATTERN_CONFIG_DIR
 
 from mtraining.attn_funcs import AttnType, overwrite_attn_implementation
 from mtraining.trainer import CustomTrainer as Trainer, CustomTrainerArgs as TrainerArgs
-from mtraining.model_configs import MODEL_TO_ATTN_FUNC, MODEL_ID_TO_MODEL_CLS, MODEL_ID_TO_PREFIX
+from mtraining.model_configs import get_model_attn_funcs, get_model_cls, get_model_prefix
 
 from mtraining.utils.expr_data import update_expr_data
 from mtraining.utils.paths import update_expr_data_save_path
@@ -45,23 +45,8 @@ logger = logging.getLogger(__name__)
 set_default_logger_level('INFO')
 
 def init_by_attn_type(model_id: str, attn_type: AttnType):
-    attn_dict = MODEL_TO_ATTN_FUNC[model_id]
-
-    if attn_type == AttnType.BASELINE:
-        print(f"{__name__} | Using Baseline Model...")
-    elif attn_type == AttnType.ZIGZAG_RING:
-        print(f"{__name__} | Using Ring Zigzag Attention-equipped Model ...")
-    elif attn_type == AttnType.STRIPE_RING:
-        print(f"{__name__} | Using Ring Stripe Attention-equipped Model ...")
-    elif attn_type == AttnType.MINFER:
-        print(f"{__name__} | Using MInference-equipped Model ...")
-    elif attn_type == AttnType.MOBA:
-        print(f"{__name__} | Using MoBA-equipped Model ...")
-    elif attn_type == AttnType.XATTN:
-        print(f"{__name__} | Using XAttention-equipped Model ...")
-    else:
-        raise ValueError(f"Invalid attn_type: {attn_type}")
-
+    attn_dict = get_model_attn_funcs(model_id)
+    logger.info(f"Using {attn_type} attention implementation for {model_id}")
     overwrite_attn_implementation(attn_dict, attn_type)
 
 
@@ -74,7 +59,7 @@ class BaselineModel(torch.nn.Module):
             active_param_config_path: str=None
     ):
         super().__init__()
-        model_cls: PreTrainedModel = MODEL_ID_TO_MODEL_CLS[model_id]
+        model_cls: PreTrainedModel = get_model_cls(model_id)
 
         if not config_path:
             self.model = model_cls.from_pretrained(
@@ -291,7 +276,7 @@ def main(args):
     scaling_factor: int = runtime_ngpus // args.plan_ngpus
     grad_accu_step: int = args.global_batch_size // (args.micro_batch_size * scaling_factor)
     
-    model_prefix = MODEL_ID_TO_PREFIX[args.model_id]
+    model_prefix = get_model_prefix(args.model_id)
     pas_config = {
         'parallel_profile': False,
         'recompute_modules': f'{model_prefix}DecoderLayer',
