@@ -10,8 +10,10 @@ from typing import Callable, Any, Dict, Optional, Tuple, Type, Union, TypeVar, L
 from nnscaler.graph import IRGraph
 from nnscaler.graph.parser import FxModuleParser
 from nnscaler.runtime.device import DeviceGroup
+from nnscaler.autodist.apis import parallelize_graph
+from nnscaler.autodist.util import get_default_profile_path
+from nnscaler.autodist.autodist_config import AutoDistConfig
 from nnscaler.runtime.module import AttrMeta, CubeModule, ParallelModule, OriginModuleMetadata, ExtraState
-
 from nnscaler.parallel import (
     ComputeConfig, ReuseType, BroadcastGenFilesStrategy, RegenStatus,
     _prepare_namespace, _compile_flags, _clean_files, _is_any_gencode_loaded, _gencode,
@@ -19,9 +21,128 @@ from nnscaler.parallel import (
     _GENCODE_FILE_TEMPLATE, _GRAPH_DUMP_FILE, _FORWARD_ARGS_DUMP_FILE, _PREDEFINED_POLICIES
 
 )
+_CUSTOM_PREDEFINED_POLICIES: Dict[str, Callable[[IRGraph, 'ComputeConfig'], IRGraph]] = {}
+for k, v in _PREDEFINED_POLICIES.items():
+    if k != 'autodist':
+        _CUSTOM_PREDEFINED_POLICIES[k] = v
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+def pas_autodist(graph: IRGraph, cfg: 'ComputeConfig') -> IRGraph:
+    print(f"{__name__} | Using custom autodist policy defined in {__file__}")
+    pas_cfg = cfg.pas_config
+
+    update_freq = pas_cfg.get('update_freq', 1)
+    if isinstance(update_freq, (tuple, list)):
+        update_freq = update_freq[0]
+
+    # optional parameters
+    explore_pipeline = pas_cfg.get('explore_pipeline', False)
+    if explore_pipeline and not cfg.use_end2end:
+        raise ValueError("explore_pipeline cannot be enabled if use_end2end is False")
+    if explore_pipeline and cfg.use_async_reducer:
+        raise ValueError("explore_pipeline cannot be enabled if use_async_reducer is True")
+
+    pipeline_scheduler = pas_cfg.get('pipeline_scheduler', '1f1b')
+    if pipeline_scheduler != '1f1b':
+        raise ValueError(f"Only 1f1b scheduler is supported in autodist.")
+
+    mesh_col = pas_cfg.get('max_partition_degree', cfg.plan_ngpus)
+    if cfg.plan_ngpus % mesh_col != 0:
+        raise ValueError(f"plan_ngpus {cfg.plan_ngpus} should be divisible by max_partition_degree {mesh_col}")
+    mesh_row = cfg.plan_ngpus // mesh_col
+    if not explore_pipeline and mesh_row != 1:
+        raise ValueError("mesh_row should be 1 if pipeline is not enabled")
+    memory_constraint = pas_cfg.get('mem_constraint', -1)
+    task_name = pas_cfg.get('task_name', '_')
+    use_memory_efficient_fp16 = pas_cfg.get('use_memory_efficient_fp16', False)
+    use_memory_efficient_bf16 = pas_cfg.get('use_memory_efficient_bf16', False)
+    use_fp16 = pas_cfg.get('use_fp16', use_memory_efficient_fp16)
+    use_bf16 = pas_cfg.get('use_bf16', use_memory_efficient_bf16)
+    re_profile = pas_cfg.get('re_profile', False)
+    verbose = pas_cfg.get('verbose', False)
+    load_plan_path = pas_cfg.get('load_plan_path', None)
+    save_plan_path = pas_cfg.get('save_plan_path', None)
+    partition_constraints_path = pas_cfg.get('partition_constraints_path', '')
+    recompute_modules = pas_cfg.get('recompute_modules', '')
+    pipeline_pivots = pas_cfg.get('pipeline_pivots', '')
+    use_apex_fused_adam_v2 = pas_cfg.get('use_apex_fused_adam_v2', False)
+    parallel_profile = pas_cfg.get('parallel_profile', True)
+    transient_mem_coef = pas_cfg.get('transient_mem_coef', 2)
+    profile_dir = pas_cfg.get('profile_dir', get_default_profile_path())
+
+    task_name = f'{task_name}_{cfg.plan_ngpus}gpus_{update_freq}update_freq'
+    if memory_constraint == -1:
+        # consider memory fragmentation and other buffers, use 80% of the memory
+        memory_constraint = int(0.8 * torch.cuda.mem_get_info()[1] / 1024 /
+                                1024 / 1024)
+    if cfg.use_zero:
+        zero_stage = 1
+        zero_ngroups = cfg.zero_ngroups
+    else:
+        zero_stage = 0
+        zero_ngroups = 1
+    if use_fp16 or use_bf16:
+        support_inkernel_cast = use_apex_fused_adam_v2
+        if use_memory_efficient_fp16 or use_memory_efficient_bf16:
+            # Check fairseq/optim/fused_adam.py
+            # If memory efficient:
+            # Considered in opt_resident_mem: fp32 moment1, fp32 moment2.
+            # Considered in opt_transient_mem: fp32 weight, fp32 gradient,
+            # because fp16 weight and gradient are casted to fp32.
+            # Here weight_mem is in fp16, so multiply by (2+2).
+            opt_resident_coef = 4
+            opt_transient_coef = 0 if support_inkernel_cast else 4
+        else:
+            # If not memory efficient:
+            # Considered in opt_resident_mem: fp32 moment1, fp32 moment2, fp32 weight.
+            # Considered in opt_transient_mem: fp32 gradient,
+            # because fp16 gradient are casted to fp32.
+            # Here weight_mem is in fp16, so multiply by (2+2+2).
+            opt_resident_coef = 6
+            # inkernel cast between fp32 weight and fp16 grad has not support
+            opt_transient_coef = 2 if support_inkernel_cast else 2
+    else:
+        # Considered in opt_resident_mem: fp32 moment1, fp32 moment2
+        # Considered in opt_transient_mem: 0
+        # Here weight_mem is in fp32, so multiply by (1+1).
+        opt_resident_coef = 2
+        opt_transient_coef = 0
+
+    autodist_cfg = AutoDistConfig(
+        mesh_row=mesh_row,
+        mesh_col=mesh_col,
+        update_freq=update_freq,
+        task_name=task_name,
+        profile_dir=profile_dir,
+        is_train=not cfg.inference_only,
+        ignore_small_tensor_threshold=524288,  # 0.5 MB is a good threshold to reduce search time and make the result correct, will refine later
+        memory_granularity=524288,             # 0.5 MB is a good threshold to reduce search time and make the result correct, will refine later
+        consider_mem=True,
+        partition_constraints_path=partition_constraints_path,
+        memory_constraint=memory_constraint,
+        opt_resident_coef=opt_resident_coef,
+        opt_transient_coef=opt_transient_coef,
+        verbose=verbose,
+        re_profile=re_profile,
+        world_size=cfg.runtime_ngpus,
+        recompute_modules=recompute_modules,
+        zero_stage=zero_stage,
+        zero_ngroups=zero_ngroups,
+        load_plan_path=load_plan_path,
+        save_plan_path=save_plan_path,
+        pipeline=explore_pipeline,
+        pipeline_pivots=pipeline_pivots,
+        parallel_profile=parallel_profile,
+        transient_mem_coef=transient_mem_coef,
+    )
+
+    return parallelize_graph(graph, autodist_cfg)
+_CUSTOM_PREDEFINED_POLICIES['autodist'] = pas_autodist
+
+
 
 def compute_config_safe_equals(a: Optional['ComputeConfig'], b: Optional['ComputeConfig']) -> bool:
     """
@@ -42,7 +163,11 @@ def compute_config_safe_equals(a: Optional['ComputeConfig'], b: Optional['Comput
                     res = False
         return res
     except AttributeError:
-        logger.warning("Failed to compare ComputeConfig. They are incompatible.")
+        logger.warning(
+            f"compute_config_safe_equals | Failed to compare ComputeConfig. They are incompatible."
+            f"Old config: {a}\n"
+            f"New config: {b}\n"
+        )
         return False
 
 GRAPH_CONFIG_FIELDS = ['constant_folding', 'user_config', 'inference_only', 'end2end_mode', 'trace_strategy']
@@ -55,15 +180,20 @@ def graph_config_equals(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     res = True
     try:
         for key in GRAPH_CONFIG_FIELDS:
-            if getattr(a, key) != getattr(b, key):
+            if a[key] != b[key]:
                 print(f"graph_config_equals | {key} not equal: {getattr(a, key)} (old_config) != {getattr(b, key)} (current_config)")
                 if key != "user_config":
                     res = False
         return res
-    except AttributeError:
-        logger.warning("Failed to compare GraphConfig. They are incompatible.")
+    except KeyError as e:
+        import traceback
+        logger.warning(
+            "graph_config_equals | Failed to compare GraphConfig with exception.\n"
+            f"Exception: {traceback.format_exc()}\n"
+            f"Old config: {a}\n"
+            f"New config: {b}\n"
+        )
         return False
-
 
 TRACE_FILE_EXTENSIONS = [
     FxModuleParser.ATTR_CONTENT_FILE_0,  # init weights file(fullmodel.pt.*), 
@@ -160,7 +290,6 @@ def _prepare_and_check_reusable(
     #     you can take it as a continous operation after a failed generation.
     old_config: Optional[ComputeConfig] = ComputeConfig.safe_load_from_file(config_file)
     is_config_match = compute_config_safe_equals(old_config, compute_config)
-    # is_graph_config_match = old_config is not None and old_config.graph_config == compute_config.graph_config
     is_graph_config_match = old_config is not None and graph_config_equals(old_config.graph_config, compute_config.graph_config)
     trace_meta_files = [
         outdir / FxModuleParser.ATTR_CONTENT_FILE_0,  # init weights file(fullmodel.pt.*), 
@@ -274,9 +403,9 @@ def parallelize(
         raise RuntimeError("Old style CubeModule is not supported")
 
     if isinstance(pas_policy, str):
-        if not pas_policy in _PREDEFINED_POLICIES:
+        if not pas_policy in _CUSTOM_PREDEFINED_POLICIES:
             raise ValueError(f"Invalid pas_policy: {pas_policy}")
-        pas_policy = _PREDEFINED_POLICIES[pas_policy]
+        pas_policy = _CUSTOM_PREDEFINED_POLICIES[pas_policy]
 
     is_module_class = inspect.isclass(module_or_module_class)
     module_class = module_or_module_class if is_module_class else module_or_module_class.__class__

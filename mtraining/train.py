@@ -35,7 +35,6 @@ from mtraining.attn_funcs import AttnType, overwrite_attn_implementation
 from mtraining.trainer import CustomTrainer as Trainer, CustomTrainerArgs as TrainerArgs
 from mtraining.model_configs import get_model_attn_funcs, get_model_cls, get_model_prefix
 
-from mtraining.utils.expr_data import update_expr_data
 from mtraining.utils.paths import update_expr_data_save_path
 from mtraining.utils.general import freeze_model_params, load_comm_profile_data
 from mtraining.utils import chunk_linear_cross_entropy, get_tokenizer, aggregate_outputs_fn, get_resume_path
@@ -247,7 +246,6 @@ def build_model_args(args, train_attn_config: MInferenceConfig) -> Dict:
 
 def main(args):
     update_expr_data_save_path(args.ckpt_save_dir, args.compile_save_path)
-    update_expr_data(args)
 
     local_rank = int(os.environ["LOCAL_RANK"])
     if local_rank == 0: load_comm_profile_data(args)
@@ -282,6 +280,9 @@ def main(args):
         'recompute_modules': f'{model_prefix}DecoderLayer',
     }
     if args.mem_constraint > 0: pas_config['mem_constraint'] = args.mem_constraint
+    if args.pas_profile_dir:
+        print(f'Setting profile_dir of PAS config to {args.pas_profile_dir} in pas_config')
+        pas_config['profile_dir'] = args.pas_profile_dir
     compute_config = ComputeConfig(
         plan_ngpus=args.plan_ngpus,
         trace_strategy=args.trace_strategy,
@@ -505,6 +506,7 @@ if __name__ == '__main__':
     parser.add_argument('--ckpt_save_dir', type=str, default=None, help='path to save checkpoints')
     parser.add_argument('--ckpt_n_epoch', type=int, default=1, help='save checkpoint every n epochs')
     parser.add_argument('--ckpt_n_step', type=int, default=0, help='save checkpoint every n steps')
+    parser.add_argument('--pas_profile_dir', type=str, default=None, help='path to save pas profile')
     parser.add_argument('--transfer_config_dir', type=str, default="none", help='path to transfer configs from another experiment')
     parser.add_argument('--transfer_force', action='store_true', help='force transfer configs')
     parser.add_argument('--active_param_config_path', type=str, default=None, help='path to the active param list')

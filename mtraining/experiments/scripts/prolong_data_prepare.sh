@@ -8,10 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PROJECT_ROOT="$(cd "${BASE_DIR}/.." && pwd)"
 
-# conda activate mtrain
-source /opt/conda/etc/profile.d/conda.sh
-conda activate mtrain
-
 # ------------------------------------------
 # Download data
 # Prerequisite: sudo apt-get install git-lfs && git lfs install
@@ -28,7 +24,7 @@ git lfs checkout
 # Data Processing
 cd $BASE_DIR
 MODEL_ID="Qwen/Qwen2.5-3B"
-PROCESSED_DATA_DIR="${BASE_DIR}/experiments/processed_datasets"
+PROCESSED_DATA_DIR="/scratch/datasets/processed_datasets"
 mkdir -p $PROCESSED_DATA_DIR
 
 torchrun --nproc_per_node=1 \
