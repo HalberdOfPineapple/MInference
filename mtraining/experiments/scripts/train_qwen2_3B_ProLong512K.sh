@@ -57,11 +57,12 @@ mkdir -p $PAS_PROFILE_DIR
 
 # -------------------------------------------
 # Training Settings
+export SOLVER="dp"
 export TRACE_STRATEGY="reuse_cache"
 
 export GLOBAL_BATCH_SIZE=64
 export MICRO_BATCH_SIZE=1
-export MEM_CONSTRAINT=37
+export MEM_CONSTRAINT=40
 
 export NUM_ITER=0
 export NUM_EPOCH=1
@@ -78,7 +79,9 @@ fi
 
 # -------------------------------------------
 # Logging Path
-/blob/utils/kill_nv.sh 1 true
+if [ "$NODE_RANK" -eq 0 ]; then
+    /blob/utils/kill_nv.sh $NUM_NODES true
+fi
 
 export LOG_PATH="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/rank_${NODE_RANK}"
 mkdir -p $LOG_PATH
@@ -108,11 +111,12 @@ torchrun --nproc_per_node=$GPU_PER_NODE \
         --node_rank=$NODE_RANK \
         --master_addr=$MASTER_ADDR \
         --master_port=$MASTER_PORT \
-        train.py  --plan_ngpus $GPU_PER_NODE \
+        train.py  --plan_ngpus $WORLD_SIZE \
                     --runtime_ngpus $WORLD_SIZE \
                     --name $EXPR_NAME \
                     --seq_len $SEQUENCE_LENGTH \
                     --attn_type $ATTN_TYPE \
+                    --solver $SOLVER \
                     --train_attn_config_path $TRAIN_ATTN_CONFIG_PATH \
                     --reuse_type $REUSE_TYPE \
                     --model_id $MODEL_ID \
@@ -132,5 +136,7 @@ torchrun --nproc_per_node=$GPU_PER_NODE \
                     --transfer_config_dir $TRANSFER_CONFIG_DIR \
                     --mem_constraint $MEM_CONSTRAINT \
                     $CHECK_RESUME > $LOG_PATH/train_${next}.log 2>&1
-/blob/utils/kill_nv.sh 1
+if [ "$NODE_RANK" -eq 0 ]; then
+    /blob/utils/kill_nv.sh $NUM_NODES
+fi
 echo "Log saved to $LOG_PATH/train_${next}.log"

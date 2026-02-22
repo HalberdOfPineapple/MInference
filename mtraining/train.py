@@ -283,6 +283,7 @@ def main(args):
     if args.pas_profile_dir:
         print(f'Setting profile_dir of PAS config to {args.pas_profile_dir} in pas_config')
         pas_config['profile_dir'] = args.pas_profile_dir
+    if args.solver: pas_config['solver'] = args.solver
     compute_config = ComputeConfig(
         plan_ngpus=args.plan_ngpus,
         trace_strategy=args.trace_strategy,
@@ -477,6 +478,7 @@ if __name__ == '__main__':
     parser.add_argument('--seq_len', type=int, default=131072, help='sequence length')
     parser.add_argument('--attn_type', type=str, default=AttnType.BASELINE, choices=AttnType.__dict__.values(), help='minference type')
     parser.add_argument('--reuse_type', type=str, default='match', choices=['match', 'override', 'moo', 'graph'], help='reuse type')
+    parser.add_argument('--solver', type=str, default='dp', choices=['dp', 'ilp'], help='solver')
     parser.add_argument('--run_mode', type=str, default='run', choices=['run', 'compile'], help='run or compile')
     parser.add_argument('--trace_strategy', type=str, default='cuda_run_cpu_offload', 
                         choices=['cpu', 'cuda', 'meta', 'cuda_run_cpu_offload', 'reuse_cache'], 

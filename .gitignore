@@ -421,4 +421,5 @@ dist
 
 
 !mtraining/model_configs/**/*.json
+!mtraining/utils/comm_prof/**
 mtraining/experiments/processed_datasets/

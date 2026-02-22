@@ -28,3 +28,4 @@ sudo MINFERENCE_FORCE_BUILD=TRUE $PIP install -e . --no-build-isolation
 cd $BASE_DIR
 sudo $PIP install -e $BASE_DIR
 
+cp -r $PROJECT_ROOT/mtraining/utils/comm_prof/NVIDIA_A100-SXM4-40GB/* $NNSCALER_HOME/resources/profile/mi200/comm/
