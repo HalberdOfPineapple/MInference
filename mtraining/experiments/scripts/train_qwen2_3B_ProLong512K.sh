@@ -5,7 +5,7 @@
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i
 export NUM_NODES=4
-export REUSE_TYPE="graph"
+export REUSE_TYPE="match"
 export FORCE_TRITON=1
 
 export HF_HOME=/scratch/hf_cache/huggingface
@@ -35,9 +35,10 @@ cd $EXPR_HOME
 
 # ------------------------------------------
 export EXPR_DIR="mtrain_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_fp090_512K" # Name for the single experiment run
+export EXPR_NAME="qwen_3B_fp090_512K_tokenized_7B_4GPUS" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
-export DATASET_PATH="/scratch/datasets/processed_datasets/long-context-524288"
+# export DATASET_PATH="/scratch/datasets/processed_datasets/long-context-524288"
+export DATASET_PATH="/scratch/datasets/processed_datasets_qwen2_7B_4_gpus/long-context-524288"
 export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
@@ -59,6 +60,12 @@ mkdir -p $PAS_PROFILE_DIR
 # Training Settings
 export SOLVER="dp"
 export TRACE_STRATEGY="reuse_cache"
+export FORCE_BROADCAST_ALL=0
+if [ "$FORCE_BROADCAST_ALL" -eq 1 ]; then
+    FORCE_BROADCAST_ALL_FLAG="--force_broadcast_all"
+else
+    FORCE_BROADCAST_ALL_FLAG=""
+fi
 
 export GLOBAL_BATCH_SIZE=64
 export MICRO_BATCH_SIZE=1
@@ -67,7 +74,7 @@ export MEM_CONSTRAINT=40
 export NUM_ITER=0
 export NUM_EPOCH=1
 
-export CKPT_SAVE_STEP=5
+export CKPT_SAVE_STEP=1
 export CKPT_SAVE_EPOCH=0
 
 export CHECK_RESUME=0
@@ -135,6 +142,7 @@ torchrun --nproc_per_node=$GPU_PER_NODE \
                     --trace_strategy $TRACE_STRATEGY \
                     --transfer_config_dir $TRANSFER_CONFIG_DIR \
                     --mem_constraint $MEM_CONSTRAINT \
+                    $FORCE_BROADCAST_ALL_FLAG \
                     $CHECK_RESUME > $LOG_PATH/train_${next}.log 2>&1
 if [ "$NODE_RANK" -eq 0 ]; then
     /blob/utils/kill_nv.sh $NUM_NODES

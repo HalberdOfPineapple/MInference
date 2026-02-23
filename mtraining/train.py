@@ -415,6 +415,7 @@ def main(args):
             "transfer_force": args.transfer_force,
         },
         merged_ckpt_path=args.resume_merged_ckpt,
+        force_broadcast_all=args.force_broadcast_all,
     )
 
     trainer = Trainer(train_args=trainer_args)
@@ -478,6 +479,7 @@ if __name__ == '__main__':
     parser.add_argument('--seq_len', type=int, default=131072, help='sequence length')
     parser.add_argument('--attn_type', type=str, default=AttnType.BASELINE, choices=AttnType.__dict__.values(), help='minference type')
     parser.add_argument('--reuse_type', type=str, default='match', choices=['match', 'override', 'moo', 'graph'], help='reuse type')
+    parser.add_argument('--force_broadcast_all', action='store_true', help='force broadcast all generated files')
     parser.add_argument('--solver', type=str, default='dp', choices=['dp', 'ilp'], help='solver')
     parser.add_argument('--run_mode', type=str, default='run', choices=['run', 'compile'], help='run or compile')
     parser.add_argument('--trace_strategy', type=str, default='cuda_run_cpu_offload', 

@@ -390,6 +390,7 @@ def parallelize(
     init_module_params: bool = True,
     broadcast_strategy: Union[str, BroadcastGenFilesStrategy] = 'none',
     transfer_config: Optional[Dict[str, Any]] = None,
+    force_broadcast_all: bool = False,
 ) -> Union[None, ParallelModule, Type[ParallelModule]]:
     if (
         isinstance(module_or_module_class, ParallelModule) or
@@ -454,7 +455,7 @@ def parallelize(
         # (we can't control the timeout setting if dist is not initialized by us)
         DeviceGroup().long_barrier()
 
-    if broadcast_strategy != BroadcastGenFilesStrategy.NONE:
+    if broadcast_strategy != BroadcastGenFilesStrategy.NONE or force_broadcast_all:
         if not dist.is_initialized(): # we only support loading in torchrun environment
             raise RuntimeError("Broadcast generated files failed: dist is not initialized.")
         dist.barrier()
@@ -472,7 +473,10 @@ def parallelize(
             regen_status = sent_obj[0]
 
         # narrow down broadcast_strategy according to regen_status
-        if regen_status == RegenStatus.NONE:
+        if force_broadcast_all:
+            logger.info(f"Force broadcast all generated files in {gen_savedir}")
+            broadcast_strategy = BroadcastGenFilesStrategy.ALL
+        elif regen_status == RegenStatus.NONE:
             # we don't need to broadcast anything
             broadcast_strategy = BroadcastGenFilesStrategy.NONE
         elif regen_status == RegenStatus.CODE:
@@ -490,15 +494,6 @@ def parallelize(
                 gen_savedir=gen_savedir,
                 instance_name=instance_name,
                 broadcast_strategy=broadcast_strategy,
-            )
-        elif os.getenv("FORCE_BROADCAST") == "1":
-            # force broadcast generated files
-            print(f"Force broadcast generated files in {gen_savedir}")
-            _broadcast_gen_files(
-                module_class,
-                gen_savedir=gen_savedir,
-                instance_name=instance_name,
-                broadcast_strategy=BroadcastGenFilesStrategy.ALL,
             )
 
     if load_module:

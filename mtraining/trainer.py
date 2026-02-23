@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 class CustomTrainerArgs(TrainerArgs):
     transfer_config: Optional[Dict[str, Any]] = None
     merged_ckpt_path: Optional[str] = None
+    force_broadcast_all: bool = False
 
 ITERATOR_COUNTER = defaultdict(int)
 def get_iter_cnt(rank: int):
@@ -399,6 +400,7 @@ class CustomTrainer(Trainer):
             broadcast_strategy=self.train_args.broadcast_strategy,
             load_module=not compile_only,
             transfer_config=self.train_args.transfer_config,
+            force_broadcast_all=self.train_args.force_broadcast_all,
         )
         if compile_only:
             return
