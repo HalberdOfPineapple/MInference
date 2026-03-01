@@ -140,9 +140,9 @@ def get_resume_path(
 ):
     if not check_resume:
         return None
-    elif resume_from is not None:
+    if resume_from is not None:
         return resume_from
-    
+
     # Detect the last checkpoint in CKPT_PATH
     ckpt_dirs = [ckpt_dir for ckpt_dir in os.listdir(ckpt_save_dir) if len(ckpt_dir.split('-')) == 2 and ckpt_dir.split('-')[0].isdigit()]
 

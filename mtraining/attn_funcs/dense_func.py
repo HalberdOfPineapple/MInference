@@ -22,20 +22,20 @@ from minference.dist_ops.striped_attention import stripe_flash_attn_func
 
 from .utils import nnscaler_upad_input
 
-
 def fa_attn_forward(
-        query_states,
+        module: torch.nn.Module,
+        query_states,  # [B, H, N, D]
         key_states,
         value_states,
         attention_mask,
-        query_length,
         dropout=0.0,
-        softmax_scale=None,
-        causal=True,
+        scaling=None,
+        **kwargs
     ):
         # Contains at least one padding token in the sequence
         if attention_mask is not None:
             batch_size = query_states.shape[0]
+            query_length = kwargs.get('query_length', query_states.shape[2])
             query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = nnscaler_upad_input(
                 query_states, key_states, value_states, attention_mask, query_length
             )
@@ -52,22 +52,22 @@ def fa_attn_forward(
                 max_seqlen_q=max_seqlen_in_batch_q,
                 max_seqlen_k=max_seqlen_in_batch_k,
                 dropout_p=dropout,
-                softmax_scale=softmax_scale,
-                causal=causal,
+                softmax_scale=scaling,
+                causal=True,
             )
 
             attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
         else:
             attn_output = flash_attn_func(
-                query_states,
-                key_states,
-                value_states,
+                query_states.transpose(1, 2),
+                key_states.transpose(1, 2),
+                value_states.transpose(1, 2),
                 dropout,
-                softmax_scale=softmax_scale,
-                causal=causal,
+                softmax_scale=scaling,
+                causal=True,
             )
 
-        return attn_output
+        return attn_output, None
 
 # ---------------------------------------------------------------------------
 def zigzag_ring_attention_forward(

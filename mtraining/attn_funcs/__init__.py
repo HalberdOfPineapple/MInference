@@ -7,7 +7,7 @@ from .xattn_func import xattn_attention_forward
 
 
 class AttnType:
-    BASELINE: str = "baseline"
+    DENSE: str = "dense"
     ZIGZAG_RING: str = "zigzag_ring"
     STRIPE_RING: str = "stripe_ring"
 
@@ -16,7 +16,7 @@ class AttnType:
     XATTN: str = "xattn"
 
 ATTN_TO_FUNC = {
-    AttnType.BASELINE: fa_attn_forward,
+    AttnType.DENSE: fa_attn_forward,
     AttnType.ZIGZAG_RING: zigzag_ring_attention_forward,
     AttnType.STRIPE_RING: stripe_ring_attention_forward,
 

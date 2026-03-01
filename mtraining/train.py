@@ -199,7 +199,7 @@ class MoBAModel(BaselineModel):
         self.model.apply(update_module)
 
 ATTN_TO_MODEL = {
-    AttnType.BASELINE: BaselineModel,
+    AttnType.DENSE: BaselineModel,
     AttnType.STRIPE_RING: BaselineModel,
     AttnType.ZIGZAG_RING: BaselineModel,
 
@@ -477,7 +477,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0, help='random seed')
     parser.add_argument('--name', type=str, default='phi-grad', help='name of the experiment')
     parser.add_argument('--seq_len', type=int, default=131072, help='sequence length')
-    parser.add_argument('--attn_type', type=str, default=AttnType.BASELINE, choices=AttnType.__dict__.values(), help='minference type')
+    parser.add_argument('--attn_type', type=str, default=AttnType.DENSE, choices=AttnType.__dict__.values(), help='minference type')
     parser.add_argument('--reuse_type', type=str, default='match', choices=['match', 'override', 'moo', 'graph'], help='reuse type')
     parser.add_argument('--force_broadcast_all', action='store_true', help='force broadcast all generated files')
     parser.add_argument('--solver', type=str, default='dp', choices=['dp', 'ilp'], help='solver')
