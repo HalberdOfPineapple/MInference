@@ -30,12 +30,13 @@ fi
 # Data Processing
 cd $BASE_DIR
 MODEL_ID="Qwen/Qwen2.5-7B"
-PROCESSED_DATA_DIR="/scratch/datasets/processed_datasets_qwen2_7B_4_gpus"
+PROCESSED_DATA_DIR="/scratch/datasets/processed_datasets_qwen2_7B_4_gpus_by_ranks"
 mkdir -p $PROCESSED_DATA_DIR
 
-torchrun --nproc_per_node=4 \
+torchrun --nproc_per_node=1 \
 	utils/data_utils/prolong.py \
     --model_id $MODEL_ID \
     --dataset_mix fixed_524288 \
     --dataset_path $RAW_DATASET_DIR/long-context-524288 \
-    --save_path $PROCESSED_DATA_DIR/long-context-524288
+    --save_path $PROCESSED_DATA_DIR/long-context-524288 \
+    --sample_interval 4
