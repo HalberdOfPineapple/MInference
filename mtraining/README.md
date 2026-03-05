@@ -57,7 +57,7 @@ cd mtraining
 bash experiments/scripts/prolong_data_prepare.sh
 ```
 
-This script downloads `princeton-nlp/prolong-data-512K` in `RAW_DATASET_DIR/long-context-524288` (~228G) and pre-processes it to `PROCESSED_DATA_DIR` (~19G).
+This script downloads `princeton-nlp/prolong-data-512K` in `RAW_DATASET_DIR/long-context-524288` (~228G) and pre-processes it to `PROCESSED_DATA_DIR` (~19G) by data sampling (default interval: 4) and re-tokenization. 
 
 
 
@@ -97,4 +97,3 @@ If you use MTraining, please cite:
   year={2025}
 }
 ```
-
