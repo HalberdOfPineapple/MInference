@@ -1,5 +1,8 @@
 #!/usr/bin/bash
 
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 export HF_TRUST_REMOTE_CODE=1
 export HF_HOME=/scratch/hf_cache/huggingface
 export HF_TOKEN_PATH="/scratch/.hf_access_token"
@@ -30,7 +33,7 @@ fi
 # Data Processing
 cd $BASE_DIR
 MODEL_ID="Qwen/Qwen2.5-7B"
-PROCESSED_DATA_DIR="/scratch/datasets/processed_datasets_qwen2_7B_4_gpus_by_ranks"
+PROCESSED_DATA_DIR="/scratch/datasets/processed_datasets/long-context-524288"
 mkdir -p $PROCESSED_DATA_DIR
 
 torchrun --nproc_per_node=1 \

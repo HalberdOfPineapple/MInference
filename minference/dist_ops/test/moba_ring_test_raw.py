@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 """Standalone distributed correctness checks for MoBA kernels."""
 from __future__ import annotations
 
@@ -8,7 +11,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from minference.ops.utils import set_seed
+from minference.dist_ops.moba_zigzag import moba_zigzag_func
 from minference.dist_ops.test.raw_test_utils import (
     SEED_BASE,
     check_forward_and_qkv_grads,
@@ -18,7 +21,7 @@ from minference.dist_ops.test.raw_test_utils import (
     slice_local_inputs,
 )
 from minference.ops.moba import moba_attn_func
-from minference.dist_ops.moba_zigzag import moba_zigzag_func
+from minference.ops.utils import set_seed
 
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-2
@@ -46,7 +49,9 @@ def _run_worker(
 
     # ----------------- forward / backward on the candidate kernel ------------
     out_local = moba_zigzag_func(
-        q_local, k_local, v_local, 
+        q_local,
+        k_local,
+        v_local,
         layer_idx=0,
         global_seq_len=cfg.seq_len,
         moba_chunk_size=cfg.moba_chunk_size,
@@ -66,7 +71,9 @@ def _run_worker(
         v_ref = v.detach().clone().requires_grad_()
 
         out_ref = moba_attn_func(
-            q_ref, k_ref, v_ref,
+            q_ref,
+            k_ref,
+            v_ref,
             global_seq_len=cfg.seq_len,
             moba_chunk_size=cfg.moba_chunk_size,
             moba_topk=cfg.moba_topk,
@@ -91,7 +98,7 @@ def run_moba_kernel_test(
     batch_size: int = 1,
     head_dim: int = 64,
     ones: bool = True,
-    num_qkv_head_pair: tuple[int, int]=(2, 2),
+    num_qkv_head_pair: tuple[int, int] = (2, 2),
     moba_chunk_size: int = 512,
     moba_topk: int = 8,
 ):
@@ -107,7 +114,7 @@ def run_moba_kernel_test(
         moba_chunk_size=moba_chunk_size,
         moba_topk=moba_topk,
     )
-  
+
     print("=" * 80)
     print(f"Testing MoBA (w. Zigzag) with configuration:\n{cfg}")
     print("=" * 80)
@@ -117,6 +124,7 @@ def run_moba_kernel_test(
         nprocs=_WORLD_SIZE,
         join=True,
     )
+
 
 if __name__ == "__main__":
     run_moba_kernel_test(

@@ -1,15 +1,16 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
+import math
 import os
 import sys
-import math
+from typing import List, Tuple
 
 import torch
-import torch.nn.functional as F
 import torch.distributed as dist
-
+import torch.nn.functional as F
 import triton
 import triton.language as tl
-
-from typing import List, Tuple
 
 # Save current flags
 if torch.version.hip is None:
@@ -17,7 +18,11 @@ if torch.version.hip is None:
     try:
         sys.setdlopenflags(os.RTLD_LAZY | os.RTLD_GLOBAL)
         import block_sparse_attn_cuda
-        from block_sparse_attn.block_sparse_attn_interface import convert_blockmask_row_reverse, convert_blockmask_col_reverse
+        from block_sparse_attn.block_sparse_attn_interface import (
+            convert_blockmask_col_reverse,
+            convert_blockmask_row_reverse,
+        )
+
         # NOTE: Block-Sparse-Attention/csrc/block_sparse_attn/src/flash_blockmask.h: add head_idx to blockmask_ptr
     except ModuleNotFoundError as e:
         print(f"[Warning] Failed to import block_sparse_attn_cuda: {e}")
@@ -27,6 +32,7 @@ if torch.version.hip is None:
     # NOTE: Block-Sparse-Attention/csrc/block_sparse_attn/src/flash_blockmask.h: add head_idx to blockmask_ptr
 
 from .op_utils.vertical_slash_utils import build_index_local, convert_blockmask
+
 
 # ----------------------------------------------------------------------------
 # CUDA-based kernels (based on Block-Sparse-Attention)
@@ -430,7 +436,7 @@ def bar_attn_bwd(
     return dq, dk.to(dq.dtype), dv.to(dq.dtype)
 
 # ----------------------------------------------------------------------------
-# Purely Triton-based kernels 
+# Purely Triton-based kernels
 @triton.jit
 def _triton_block_attn_fwd_kernel(
     Q, K, V, sm_scale,
@@ -493,7 +499,7 @@ def _triton_block_attn_fwd_kernel(
     # load q: it will stay in SRAM throughout
     q = tl.load(q_ptrs)
     q = (q * qk_scale).to(Q.type.element_ty)
-    
+
     if CAUSAL:
         block_split = block_num - 2
     else:
@@ -583,13 +589,13 @@ def triton_block_attn_fwd(
     batch_size, num_tokens, num_qo_heads, head_dim = q.shape
     num_kv_heads = k.shape[2]
     num_blocks = block_idx.shape[2]
-    
+
     o = torch.zeros_like(q)
     lse = torch.zeros((batch_size, num_qo_heads, num_tokens), dtype=torch.float32, device=q.device) - torch.inf
 
     _triton_block_attn_fwd_kernel[(num_blocks, num_qo_heads, batch_size)](
-        q, k, v, softmax_scale, 
-        block_cnt, block_idx, 
+        q, k, v, softmax_scale,
+        block_cnt, block_idx,
         o, lse,
         q.stride(0), q.stride(2), q.stride(1), q.stride(3),
         k.stride(0), k.stride(2), k.stride(1), k.stride(3),
@@ -677,7 +683,7 @@ def _triton_block_attn_bwd_kernel(
     l_i = tl.load(l_ptrs) * 1.44269504
 
     dq = tl.zeros([BLOCK_M, BLOCK_DMODEL], dtype=tl.float32)
-    
+
     if CAUSAL:
         block_split = block_num - 2
     else:
@@ -867,7 +873,7 @@ def _triton_block_bar_attn_fwd_kernel(
     # load q: it will stay in SRAM throughout
     q = tl.load(q_ptrs)
     q = (q * qk_scale).to(Q.type.element_ty)
-    
+
     if CAUSAL:
         block_split = block_num - 2
     else:
@@ -1096,7 +1102,7 @@ def _triton_block_bar_attn_bwd_kernel(
     l_i = tl.load(l_ptrs) * 1.44269504
 
     dq = tl.zeros([BLOCK_M, BLOCK_DMODEL], dtype=tl.float32)
-    
+
     if CAUSAL:
         block_split = block_num - 2
     else:
@@ -1377,7 +1383,7 @@ class MInferenceAttnTritonFunc(torch.autograd.Function):
 # ---------------------------------------------------------------------------------
 # Wrapped Attention Functions
 # --------------------------------------------
-# CUDA-Based 
+# CUDA-Based
 def minference_flash_attn_func(
     q: torch.Tensor,  # [batch_size, num_tokens, num_qo_heads, head_dim]
     k: torch.Tensor,  # [batch_size, num_tokens, num_kv_heads, head_dim]
@@ -1435,7 +1441,7 @@ def minference_flash_attn_kvpacked_func(
     )
 
 # --------------------------------------------
-# Triton-Based 
+# Triton-Based
 def minference_flash_attn_triton_func(
     q: torch.Tensor,  # [batch_size, num_tokens, num_qo_heads, head_dim]
     k: torch.Tensor,  # [batch_size, num_tokens, num_kv_heads, head_dim]

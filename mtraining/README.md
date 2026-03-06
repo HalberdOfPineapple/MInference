@@ -1,6 +1,6 @@
 # MTraining
 
-[[Paper]](https://arxiv.org/abs/2510.18830)  
+[[Paper]](https://arxiv.org/abs/2510.18830)
 
 ![MTraining](../images/mtraining/Framework.png)
 
@@ -57,13 +57,13 @@ cd mtraining
 bash experiments/scripts/prolong_data_prepare.sh
 ```
 
-This script downloads `princeton-nlp/prolong-data-512K` in `RAW_DATASET_DIR/long-context-524288` (~228G) and pre-processes it to `PROCESSED_DATA_DIR` (~19G) by data sampling (default interval: 4) and re-tokenization. 
+This script downloads `princeton-nlp/prolong-data-512K` in `RAW_DATASET_DIR/long-context-524288` (~228G) and pre-processes it to `PROCESSED_DATA_DIR` (~19G) by data sampling (default interval: 4) and re-tokenization.
 
 
 
 ### 2) Launch training
 
-We have provided sample training script in `mtraining/experiments/scripts` for training Qwen-2.5 models (0.5B and 3B) with or without sparse attention. For example, `mtraining/experiments/scripts/train_qwen2_3B_ProLong512K.sh` is to train Qwen-2.5-3B with MTraining under Striped Ring Attention. 
+We have provided sample training script in `mtraining/experiments/scripts` for training Qwen-2.5 models (0.5B and 3B) with or without sparse attention. For example, `mtraining/experiments/scripts/train_qwen2_3B_ProLong512K.sh` is to train Qwen-2.5-3B with MTraining under Striped Ring Attention.
 
 You can adjust the type of the attention operator to be used during the training, where the supported `--attn_type` values include:
 

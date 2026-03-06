@@ -1,9 +1,11 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 import os
 from typing import List
 
 import torch
 import torch.distributed as dist
-
 import triton
 import triton.language as tl
 
@@ -160,7 +162,7 @@ def _calc_block_mask_kernel(
     s_idx_ptr = s_idx + batch_idx * stride_sz + head_idx * stride_sh
     block_mask_ptr = block_mask + batch_idx * stride_bz + head_idx * stride_bh
     block_idx = group_idx * BLOCK_N + block_offs
- 
+
     blocks = tl.zeros([BLOCK_N], dtype=tl.uint8)
     for s_off in range(0, max_s_size, BLOCK_K):
         s = tl.load(s_idx_ptr + (s_off + slash_offs) * stride_sk)
@@ -399,7 +401,7 @@ def convert_indices(
         max_v_size, num_blocks, granularity, world_size, rank, BLOCK_N=BLOCK_N,
         num_warps=1, num_stages=1,
     )
-    
+
     return block_mask, bar_idx, bar_cnt, bar_pos, v_cnt
 
 
@@ -767,4 +769,3 @@ def convert_blockmask(
 
     nonzero_rowcnt = blockmask.sum(dim=-1, dtype=torch.int32)
     return nonzero_idx.contiguous().to(dtype=torch.int32), nonzero_rowcnt.contiguous()
-

@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Microsoft
+# Copyright (c) 2025-2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 # Refer to the code in https://github.com/mit-han-lab/x-attention
 

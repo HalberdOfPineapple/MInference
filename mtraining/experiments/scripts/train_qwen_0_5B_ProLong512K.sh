@@ -1,9 +1,7 @@
 #!/usr/bin/bash
 
-
-# conda activate mtrain
-source /opt/conda/etc/profile.d/conda.sh
-conda activate mtrain
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
 
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i

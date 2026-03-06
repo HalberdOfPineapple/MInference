@@ -118,7 +118,7 @@ Currently, we support the following LLMs:
 ### How to use MInference
 
 > [!TIP]
-> To benefit from fast kernel implementations, we recommend installing **SGLang** or **vLLM**. 
+> To benefit from fast kernel implementations, we recommend installing **SGLang** or **vLLM**.
 > for sglang
 > ```bash
 > uv pip install "sglang[all]>=0.4.6.post4"

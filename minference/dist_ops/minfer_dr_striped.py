@@ -1,16 +1,34 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 import os
+from typing import Dict, List, Tuple
+
 import torch
 import torch.distributed as dist
 
-from typing import List, Tuple, Dict
-from .utils import (
-    RingComm, 
-    shuffle_striped_input, recover_striped_output,
-    get_inner_ring, get_outer_ring
+from minference.ops.op_utils.vertical_slash_utils import (
+    build_index,
+    convert_blockmask,
+    extract_kv,
+    merge_kv,
+)
+from minference.ops.pit_sparse_flash_attention_v3 import (
+    bar_attn_bwd,
+    block_attn_bwd,
+    block_bar_attn_bwd,
+    block_bar_attn_fwd,
 )
 from minference.ops.utils import use_triton
-from minference.ops.op_utils.vertical_slash_utils import build_index, extract_kv, merge_kv, convert_blockmask
-from minference.ops.pit_sparse_flash_attention_v3 import block_bar_attn_fwd, block_attn_bwd, bar_attn_bwd, block_bar_attn_bwd
+
+from .utils import (
+    RingComm,
+    get_inner_ring,
+    get_outer_ring,
+    recover_striped_output,
+    shuffle_striped_input,
+)
+
 
 # ------------------------------------------------------------------------
 # CUDA-based Implementation (Block-Sparse-Attention version)
@@ -18,7 +36,7 @@ def minfer_dr_stripe_forward_inner(
     process_group: dist.ProcessGroup,
     outer_step: int,
     outer_offset: int,
-    outer_rank: int, 
+    outer_rank: int,
     inner_ring: List[int],
     q: torch.Tensor,  # [batch_size, num_tokens, num_qo_heads, head_dim]
     k: torch.Tensor,  # [batch_size, num_tokens, num_kv_heads, head_dim]
@@ -41,25 +59,35 @@ def minfer_dr_stripe_forward_inner(
     num_inner_steps = len(inner_ring)
 
     next_k, next_v = None, None
-    block_idx, block_cnt = convert_blockmask(block_mask, block_size_M=granularity, block_size_N=64)
+    block_idx, block_cnt = convert_blockmask(
+        block_mask, block_size_M=granularity, block_size_N=64
+    )
 
     for inner_step in range(num_inner_steps):
         if inner_step + 1 != num_inner_steps:
             next_k, next_v = inner_comm.send_recv_kv(k, v)
-            
+
         block_causal = (outer_step == 0) and (inner_step == 0)
         inner_offset = (inner_rank - inner_step) % num_inner_steps
         offset = outer_offset * num_inner_steps + inner_offset
 
         out, lse = block_bar_attn_fwd(
-            q, k, v, out, lse, softmax_scale,
-            bar_idx, bar_cnt, block_idx[inner_offset], block_cnt[inner_offset],
+            q,
+            k,
+            v,
+            out,
+            lse,
+            softmax_scale,
+            bar_idx,
+            bar_cnt,
+            block_idx[inner_offset],
+            block_cnt[inner_offset],
             granularity=granularity,
             step=offset,
             causal=block_causal,
         )
         extract_kv(k, v, bar_k, bar_v, v_idx, v_cnt, step=offset)
-        
+
         if inner_step + 1 != num_inner_steps:
             inner_comm.wait()
             k, v = next_k, next_v
@@ -93,8 +121,12 @@ def minfer_dr_stripe_forward_outer(
 
     batch_size, _, num_qo_heads, head_dim = q.shape
     max_v_size = v_idx.shape[-1]
-    bar_k = torch.empty((batch_size, max_v_size, num_qo_heads, head_dim), dtype=q.dtype, device=q.device)
-    bar_v = torch.empty((batch_size, max_v_size, num_qo_heads, head_dim), dtype=q.dtype, device=q.device)
+    bar_k = torch.empty(
+        (batch_size, max_v_size, num_qo_heads, head_dim), dtype=q.dtype, device=q.device
+    )
+    bar_v = torch.empty(
+        (batch_size, max_v_size, num_qo_heads, head_dim), dtype=q.dtype, device=q.device
+    )
 
     for outer_step in range(num_outer_steps):
         if outer_step + 1 != num_outer_steps:
@@ -102,11 +134,25 @@ def minfer_dr_stripe_forward_outer(
         outer_offset = (outer_rank - outer_step) % num_outer_steps
 
         out, lse = minfer_dr_stripe_forward_inner(
-            process_group, 
-            outer_step, outer_offset, outer_rank, inner_ring,
-            q, k, v, out, lse, layer_idx, softmax_scale,
-            inner_block_masks[outer_offset], bar_idx, bar_cnt,
-            v_idx, v_cnt, bar_k, bar_v,
+            process_group,
+            outer_step,
+            outer_offset,
+            outer_rank,
+            inner_ring,
+            q,
+            k,
+            v,
+            out,
+            lse,
+            layer_idx,
+            softmax_scale,
+            inner_block_masks[outer_offset],
+            bar_idx,
+            bar_cnt,
+            v_idx,
+            v_cnt,
+            bar_k,
+            bar_v,
             granularity,
         )
 
@@ -154,12 +200,19 @@ def minfer_dr_stripe_backward_inner(
         if inner_step + 1 != num_inner_steps:
             next_k, next_v = inner_kv_comm.send_recv_kv(k, v)
         block_causal = (outer_step == 0) and (inner_step == 0)
-        offset = outer_offset * num_inner_steps + (inner_rank - inner_step) % num_inner_steps
+        offset = (
+            outer_offset * num_inner_steps + (inner_rank - inner_step) % num_inner_steps
+        )
 
         # Block Mask
         step_dq, step_dk, step_dv = block_attn_bwd(
-            dout, q, k, v, out,
-            softmax_lse, softmax_scale,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            softmax_scale,
             block_mask[offset],
             granularity=granularity,
             deterministic=False,
@@ -226,9 +279,18 @@ def minfer_dr_stripe_backward_outer(
     # Bar Mask
     full_bar_cnt = torch.stack([bar_cnt[..., 0], bar_cnt[..., -1]], dim=-1)
     dq, bar_dk, bar_dv = bar_attn_bwd(
-        dout, q, bar_k, bar_v, out, None, None, None,
-        softmax_lse, softmax_scale,
-        bar_pos, full_bar_cnt,
+        dout,
+        q,
+        bar_k,
+        bar_v,
+        out,
+        None,
+        None,
+        None,
+        softmax_lse,
+        softmax_scale,
+        bar_pos,
+        full_bar_cnt,
         granularity=granularity,
         deterministic=False,
         step=0,
@@ -240,11 +302,25 @@ def minfer_dr_stripe_backward_outer(
         outer_offset = (outer_rank - outer_step) % num_outer_steps
 
         dq, step_dk, step_dv = minfer_dr_stripe_backward_inner(
-            process_group, outer_step, outer_offset, outer_rank, inner_ring,
-            dout, q, k, v, out, softmax_lse, 
-            layer_idx, softmax_scale,
-            block_mask, v_idx, v_cnt,
-            dq, bar_dk, bar_dv,
+            process_group,
+            outer_step,
+            outer_offset,
+            outer_rank,
+            inner_ring,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            layer_idx,
+            softmax_scale,
+            block_mask,
+            v_idx,
+            v_cnt,
+            dq,
+            bar_dk,
+            bar_dv,
             granularity,
         )
 
@@ -269,7 +345,6 @@ def minfer_dr_stripe_backward_outer(
 
     outer_d_kv_comm.wait()
     return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
-
 
 
 # ---------------------------------------------------------------------
@@ -302,11 +377,21 @@ def minfer_dr_stripe_triton_forward_inner(
             next_k, next_v = inner_comm.send_recv_kv(k, v)
 
         block_causal = (outer_step == 0) and (inner_step == 0)
-        offset = outer_offset * num_inner_steps + (inner_rank - inner_step) % num_inner_steps
+        offset = (
+            outer_offset * num_inner_steps + (inner_rank - inner_step) % num_inner_steps
+        )
 
         out, lse = block_bar_attn_fwd(
-            q, k, v, out, lse, softmax_scale,
-            bar_idx, bar_cnt, block_idx[offset], block_cnt[offset],
+            q,
+            k,
+            v,
+            out,
+            lse,
+            softmax_scale,
+            bar_idx,
+            bar_cnt,
+            block_idx[offset],
+            block_cnt[offset],
             granularity=granularity,
             step=offset,
             causal=block_causal,
@@ -347,9 +432,20 @@ def minfer_dr_stripe_triton_forward_outer(
 
         outer_offset = (outer_rank - outer_step) % num_outer_steps
         out, lse = minfer_dr_stripe_triton_forward_inner(
-            process_group, outer_step, outer_offset, inner_ring,
-            q, k, v, out, lse, softmax_scale,
-            block_idx, block_cnt, bar_idx, bar_cnt,
+            process_group,
+            outer_step,
+            outer_offset,
+            inner_ring,
+            q,
+            k,
+            v,
+            out,
+            lse,
+            softmax_scale,
+            block_idx,
+            block_cnt,
+            bar_idx,
+            bar_cnt,
             granularity,
         )
 
@@ -395,12 +491,25 @@ def minfer_dr_stripe_triton_backward_inner(
             next_k, next_v = inner_kv_comm.send_recv_kv(k, v)
 
         block_causal = (outer_step == 0) and (inner_step == 0)
-        offset = outer_offset * num_inner_steps + (inner_rank - inner_step) % num_inner_steps
+        offset = (
+            outer_offset * num_inner_steps + (inner_rank - inner_step) % num_inner_steps
+        )
 
         dq, step_dk, step_dv = block_bar_attn_bwd(
-            dout, q, k, v, out, dq, None, None,
-            softmax_lse, softmax_scale,
-            bar_idx, bar_cnt, block_idx[offset], block_cnt[offset],
+            dout,
+            q,
+            k,
+            v,
+            out,
+            dq,
+            None,
+            None,
+            softmax_lse,
+            softmax_scale,
+            bar_idx,
+            bar_cnt,
+            block_idx[offset],
+            block_cnt[offset],
             granularity=granularity,
             deterministic=False,
             step=offset,
@@ -464,9 +573,22 @@ def minfer_dr_stripe_triton_backward_outer(
 
         outer_offset = (outer_rank - outer_step) % num_outer_steps
         step_dq, step_dk, step_dv = minfer_dr_stripe_triton_backward_inner(
-            process_group, outer_step, outer_offset, inner_ring,
-            dout, q, k, v, out, softmax_lse, softmax_scale,
-            block_idx, block_cnt, bar_idx, bar_cnt, granularity,
+            process_group,
+            outer_step,
+            outer_offset,
+            inner_ring,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            softmax_scale,
+            block_idx,
+            block_cnt,
+            bar_idx,
+            bar_cnt,
+            granularity,
         )
 
         if outer_step == 0:
@@ -493,6 +615,7 @@ def minfer_dr_stripe_triton_backward_outer(
     outer_d_kv_comm.wait()
     return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
+
 # -----------------------------------------------------------
 # Attention Classes
 class MInferDRStripeFunc(torch.autograd.Function):
@@ -511,42 +634,74 @@ class MInferDRStripeFunc(torch.autograd.Function):
         group,
     ):
         batch_size, num_tokens_local, num_qo_heads, head_dim = q.shape
-        if softmax_scale is None: softmax_scale = head_dim ** (-0.5)
+        if softmax_scale is None:
+            softmax_scale = head_dim ** (-0.5)
         inner_ring = get_inner_ring(group)
         outer_ring = get_outer_ring(group)
 
         # ----------------------------------------------
         # Index Build
         block_mask, bar_idx, bar_cnt, bar_pos, v_idx, v_cnt = build_index(
-            q, k, v_size, s_size, num_tokens_local, 
-            granularity=granularity, group=group
+            q, k, v_size, s_size, num_tokens_local, granularity=granularity, group=group
         )
-        
+
         # ----------------------------------------------
         # Shuffle
-        q = shuffle_striped_input(to_send=q, dim=1, granularity=granularity, process_group=group)
-        k = shuffle_striped_input(to_send=k, dim=1, granularity=granularity, process_group=group)
-        v = shuffle_striped_input(to_send=v, dim=1, granularity=granularity, process_group=group)
+        q = shuffle_striped_input(
+            to_send=q, dim=1, granularity=granularity, process_group=group
+        )
+        k = shuffle_striped_input(
+            to_send=k, dim=1, granularity=granularity, process_group=group
+        )
+        v = shuffle_striped_input(
+            to_send=v, dim=1, granularity=granularity, process_group=group
+        )
 
         # ----------------------------------------------
         # Compute
         out, softmax_lse, bar_k, bar_v = minfer_dr_stripe_forward_outer(
-            group, outer_ring, inner_ring,
-            q, k, v, layer_idx,
-            softmax_scale, 
-            block_mask, bar_idx, bar_cnt, v_idx, v_cnt,
+            group,
+            outer_ring,
+            inner_ring,
+            q,
+            k,
+            v,
+            layer_idx,
+            softmax_scale,
+            block_mask,
+            bar_idx,
+            bar_cnt,
+            v_idx,
+            v_cnt,
             granularity,
         )
 
         # ----------------------------------------------
         # Recover
-        recovered_out = recover_striped_output(out, dim=1, granularity=granularity, process_group=group)
+        recovered_out = recover_striped_output(
+            out, dim=1, granularity=granularity, process_group=group
+        )
         if return_softmax:
-            recovered_softmax_lse = recover_striped_output(softmax_lse, dim=2, granularity=granularity, process_group=group)
+            recovered_softmax_lse = recover_striped_output(
+                softmax_lse, dim=2, granularity=granularity, process_group=group
+            )
 
         # ----------------------------------------------
         # Saving tensors for backward
-        ctx.save_for_backward(q, k, v, out, softmax_lse, block_mask, bar_pos, bar_cnt, v_idx, v_cnt, bar_k, bar_v)
+        ctx.save_for_backward(
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            block_mask,
+            bar_pos,
+            bar_cnt,
+            v_idx,
+            v_cnt,
+            bar_k,
+            bar_v,
+        )
         ctx.softmax_scale = softmax_scale
         ctx.granularity = granularity
         ctx.group = group
@@ -562,32 +717,68 @@ class MInferDRStripeFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout, *args):
-        q, k, v, out, softmax_lse, block_mask, bar_pos, bar_cnt, v_idx, v_cnt, bar_k, bar_v = ctx.saved_tensors
+        (
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            block_mask,
+            bar_pos,
+            bar_cnt,
+            v_idx,
+            v_cnt,
+            bar_k,
+            bar_v,
+        ) = ctx.saved_tensors
         inner_ring = ctx.inner_ring
         layer_idx = ctx.layer_idx
         group = ctx.group
 
         # ----------------------------------------------
         # Shuffle
-        dout = shuffle_striped_input(to_send=dout, dim=1, granularity=ctx.granularity, process_group=ctx.group)
+        dout = shuffle_striped_input(
+            to_send=dout, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
 
         # ----------------------------------------------
         # Compute
         dq, dk, dv = minfer_dr_stripe_backward_outer(
-            ctx.group, ctx.outer_ring, ctx.inner_ring,
-            dout, q, k, v, out, softmax_lse, 
-            layer_idx, ctx.softmax_scale,
-            block_mask, bar_pos, bar_cnt, v_idx, v_cnt, bar_k, bar_v,
+            ctx.group,
+            ctx.outer_ring,
+            ctx.inner_ring,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            layer_idx,
+            ctx.softmax_scale,
+            block_mask,
+            bar_pos,
+            bar_cnt,
+            v_idx,
+            v_cnt,
+            bar_k,
+            bar_v,
             granularity=ctx.granularity,
         )
 
         # ----------------------------------------------
         # Recover
-        dq = recover_striped_output(dq, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        dk = recover_striped_output(dk, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        dv = recover_striped_output(dv, dim=1, granularity=ctx.granularity, process_group=ctx.group)
+        dq = recover_striped_output(
+            dq, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        dk = recover_striped_output(
+            dk, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        dv = recover_striped_output(
+            dv, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
 
         return dq, dk, dv, None, None, None, None, None, None, None
+
 
 class MInferDRStripeTritonFunc(torch.autograd.Function):
     @staticmethod
@@ -609,24 +800,45 @@ class MInferDRStripeTritonFunc(torch.autograd.Function):
             softmax_scale = head_dim ** (-0.5)
 
         # build index TODO: move convert_indices() into the first step
-        block_mask, bar_idx, bar_cnt, _, _, _ = build_index(q, k, v_size, s_size, num_tokens_local, granularity=granularity, group=group)
-        block_idx, block_cnt = convert_blockmask(block_mask, block_size_M=granularity, block_size_N=64)
+        block_mask, bar_idx, bar_cnt, _, _, _ = build_index(
+            q, k, v_size, s_size, num_tokens_local, granularity=granularity, group=group
+        )
+        block_idx, block_cnt = convert_blockmask(
+            block_mask, block_size_M=granularity, block_size_N=64
+        )
 
         # TODO: remove shuffle
-        q = shuffle_striped_input(to_send=q, dim=1, granularity=granularity, process_group=group)
-        k = shuffle_striped_input(to_send=k, dim=1, granularity=granularity, process_group=group)
-        v = shuffle_striped_input(to_send=v, dim=1, granularity=granularity, process_group=group)
+        q = shuffle_striped_input(
+            to_send=q, dim=1, granularity=granularity, process_group=group
+        )
+        k = shuffle_striped_input(
+            to_send=k, dim=1, granularity=granularity, process_group=group
+        )
+        v = shuffle_striped_input(
+            to_send=v, dim=1, granularity=granularity, process_group=group
+        )
 
         inner_ring = get_inner_ring(group)
         outer_ring = get_outer_ring(group)
         out, softmax_lse = minfer_dr_stripe_triton_forward_outer(
-            group, outer_ring, inner_ring,
-            q, k, v, softmax_scale,
-            block_idx, block_cnt, bar_idx, bar_cnt, granularity,
+            group,
+            outer_ring,
+            inner_ring,
+            q,
+            k,
+            v,
+            softmax_scale,
+            block_idx,
+            block_cnt,
+            bar_idx,
+            bar_cnt,
+            granularity,
         )
 
         # this should be out_padded
-        ctx.save_for_backward(q, k, v, out, softmax_lse, block_idx, block_cnt, bar_idx, bar_cnt)
+        ctx.save_for_backward(
+            q, k, v, out, softmax_lse, block_idx, block_cnt, bar_idx, bar_cnt
+        )
         ctx.softmax_scale = softmax_scale
         ctx.granularity = granularity
         ctx.group = group
@@ -634,26 +846,61 @@ class MInferDRStripeTritonFunc(torch.autograd.Function):
         ctx.outer_ring = outer_ring
         ctx.layer_idx = layer_idx
 
-        out = recover_striped_output(out, dim=1, granularity=granularity, process_group=group)
+        out = recover_striped_output(
+            out, dim=1, granularity=granularity, process_group=group
+        )
         if return_softmax:
-            softmax_lse = recover_striped_output(softmax_lse, dim=2, granularity=granularity, process_group=group)
+            softmax_lse = recover_striped_output(
+                softmax_lse, dim=2, granularity=granularity, process_group=group
+            )
             return (out, softmax_lse, None)
         return out
 
     @staticmethod
     def backward(ctx, dout, *args):
-        dout = shuffle_striped_input(to_send=dout, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        q, k, v, out, softmax_lse, block_idx, block_cnt, bar_idx, bar_cnt = ctx.saved_tensors
+        dout = shuffle_striped_input(
+            to_send=dout, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        (
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            block_idx,
+            block_cnt,
+            bar_idx,
+            bar_cnt,
+        ) = ctx.saved_tensors
 
         dq, dk, dv = minfer_dr_stripe_triton_backward_outer(
-            ctx.group, ctx.outer_ring, ctx.inner_ring,
-            dout, q, k, v, out, softmax_lse, ctx.softmax_scale,
-            block_idx, block_cnt, bar_idx, bar_cnt, ctx.granularity,
+            ctx.group,
+            ctx.outer_ring,
+            ctx.inner_ring,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            ctx.softmax_scale,
+            block_idx,
+            block_cnt,
+            bar_idx,
+            bar_cnt,
+            ctx.granularity,
         )
-        dq = recover_striped_output(dq, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        dk = recover_striped_output(dk, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        dv = recover_striped_output(dv, dim=1, granularity=ctx.granularity, process_group=ctx.group)
+        dq = recover_striped_output(
+            dq, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        dk = recover_striped_output(
+            dk, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        dv = recover_striped_output(
+            dv, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
         return dq, dk, dv, None, None, None, None, None, None, None
+
 
 # ---------------------------------------------------------------------
 # Wrapped Attention Functions
@@ -682,8 +929,11 @@ def minfer_dr_stripe_func(
 
     if not use_triton():
         return MInferDRStripeFunc.apply(
-            q, k, v,
-            v_size, s_size,
+            q,
+            k,
+            v,
+            v_size,
+            s_size,
             layer_idx,
             softmax_scale,
             granularity,
@@ -692,8 +942,11 @@ def minfer_dr_stripe_func(
         )
     else:
         return MInferDRStripeTritonFunc.apply(
-            q, k, v,
-            v_size, s_size,
+            q,
+            k,
+            v,
+            v_size,
+            s_size,
             layer_idx,
             softmax_scale,
             granularity,
@@ -704,23 +957,18 @@ def minfer_dr_stripe_func(
 
 def minfer_dr_stripe_qkvpacked_func(
     qkv: torch.Tensor,  # [batch_size, num_tokens, 3, num_heads, head_dim]
-    *args, **kwargs,
+    *args,
+    **kwargs,
 ):
     return minfer_dr_stripe_func(
-        qkv[:, :, 0],
-        qkv[:, :, 1],
-        qkv[:, :, 2],
-        *args, **kwargs
+        qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2], *args, **kwargs
     )
+
 
 def minfer_dr_stripe_kvpacked_func(
     q: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]
     kv: torch.Tensor,  # [batch_size, num_tokens, 2, num_heads, head_dim]
-    *args, **kwargs,
+    *args,
+    **kwargs,
 ):
-    return minfer_dr_stripe_func(
-        q,
-        kv[:, :, 0],
-        kv[:, :, 1],
-        *args, **kwargs
-    )
+    return minfer_dr_stripe_func(q, kv[:, :, 0], kv[:, :, 1], *args, **kwargs)

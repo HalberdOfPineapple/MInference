@@ -1,5 +1,8 @@
 #!/usr/bin/bash
 
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 # conda activate mtrain
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i
@@ -33,7 +36,7 @@ mkdir -p $EXPR_DATA_STORE
 cd $EXPR_HOME
 
 export EXPR_DIR="mtrain_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_fp090_512K_tokenized_7B_4GPUS" # Name for the single experiment run
+export EXPR_NAME="qwen_3B_fp090_512K" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
 
 # -----------------------------------------------

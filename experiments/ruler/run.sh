@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2024 Microsoft
+# Copyright (c) 2024-2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 
 export TOKENIZERS_PARALLELISM=false

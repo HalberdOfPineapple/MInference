@@ -1,26 +1,32 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
+import logging
 import os
+from typing import List
+
 import torch
 import torch.distributed as dist
-
-from typing import List
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 from nnscaler.cli.trainer_args import AggregatedOutputs
 from nnscaler.runtime.module import ParallelModule
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .paths import BASE_DIR
 
-import logging
 logger = logging.getLogger(__name__)
 
-def get_tokenizer(tokenizer_name_or_path,
-                  model_max_length=None,
-                  default_bos_token="<s>",
-                  default_eos_token="</s>",
-                  default_pad_token="[PAD]",
-                  default_unk_token="<unk>"):
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path, trust_remote_code=True)
+def get_tokenizer(
+    tokenizer_name_or_path,
+    model_max_length=None,
+    default_bos_token="<s>",
+    default_eos_token="</s>",
+    default_pad_token="[PAD]",
+    default_unk_token="<unk>",
+):
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_name_or_path, trust_remote_code=True
+    )
     special_tokens_dict = dict()
     if tokenizer.pad_token is None:
         special_tokens_dict["pad_token"] = default_pad_token
@@ -36,6 +42,7 @@ def get_tokenizer(tokenizer_name_or_path,
         tokenizer.model_max_length = model_max_length
     return tokenizer
 
+
 def get_module_path(model_id: str):
     model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
     module_path = str(model.__class__.__module__)
@@ -43,19 +50,23 @@ def get_module_path(model_id: str):
 
     return module_path
 
+
 def aggregate_outputs_fn(loss_outputs, sync_group) -> AggregatedOutputs:
     losses, ntokens_info = [], []
     for _, loss, ntokens, _ in loss_outputs:
         losses.append(loss)
         ntokens_info.append(ntokens)
 
-    
     loss_sum = torch.sum(torch.stack(losses), dtype=torch.float64)
     dist.all_reduce(loss_sum, group=sync_group)
 
-    ntokens_sum = torch.sum(torch.tensor(ntokens_info, dtype=torch.float64, device=torch.cuda.current_device()))
+    ntokens_sum = torch.sum(
+        torch.tensor(
+            ntokens_info, dtype=torch.float64, device=torch.cuda.current_device()
+        )
+    )
     dist.all_reduce(ntokens_sum, group=sync_group)
-    
+
     num_batches = torch.tensor(len(losses), device=torch.cuda.current_device())
     dist.all_reduce(num_batches, group=sync_group)
 
@@ -68,34 +79,51 @@ def aggregate_outputs_fn(loss_outputs, sync_group) -> AggregatedOutputs:
 
 def load_comm_profile_data(args):
     if args.plan_ngpus in [2, 4, 8, 16]:
-        logger.info(f"Use nnscaler's built-in communication profiling data for {args.plan_ngpus} GPUs")
+        logger.info(
+            f"Use nnscaler's built-in communication profiling data for {args.plan_ngpus} GPUs"
+        )
         return
 
     from nnscaler.autodist.util import get_default_profile_path
-    profile_dir = os.path.join(get_default_profile_path(), 'comm')
+
+    profile_dir = os.path.join(get_default_profile_path(), "comm")
     profile_path = os.path.join(profile_dir, f"intra_{args.plan_ngpus}.json")
 
     if not os.path.exists(profile_path):
         import shutil
-        logger.info(f"Communication profiling data not found in {profile_dir} for {args.plan_ngpus} GPUs. Use built-in communication profiling data (collected on A100-SXM4-40GB)")
-        src_file_path = os.path.join(BASE_DIR, "utils/comm_prof/NVIDIA_A100-SXM4-40GB", f"intra_{args.plan_ngpus}.json")
+
+        logger.info(
+            f"Communication profiling data not found in {profile_dir} for {args.plan_ngpus} GPUs. Use built-in communication profiling data (collected on A100-SXM4-40GB)"
+        )
+        src_file_path = os.path.join(
+            BASE_DIR,
+            "utils/comm_prof/NVIDIA_A100-SXM4-40GB",
+            f"intra_{args.plan_ngpus}.json",
+        )
         if not os.path.exists(src_file_path):
-            raise FileNotFoundError(f"Communication profiling data not found in {src_file_path} nor in nnscaler's built-in library for {args.plan_ngpus} GPUs")
+            raise FileNotFoundError(
+                f"Communication profiling data not found in {src_file_path} nor in nnscaler's built-in library for {args.plan_ngpus} GPUs"
+            )
         os.makedirs(profile_dir, exist_ok=True)
 
         num_dev = 2
         while num_dev <= args.plan_ngpus:
-            src_file_path = os.path.join(BASE_DIR, "utils/comm_prof/NVIDIA_A100-SXM4-40GB", f"intra_{num_dev}.json")
+            src_file_path = os.path.join(
+                BASE_DIR,
+                "utils/comm_prof/NVIDIA_A100-SXM4-40GB",
+                f"intra_{num_dev}.json",
+            )
             profile_path = os.path.join(profile_dir, f"intra_{num_dev}.json")
             if os.path.exists(profile_path):
-                logger.info(f"Communication profiling data already exists in {profile_path} for {num_dev} GPUs")
+                logger.info(
+                    f"Communication profiling data already exists in {profile_path} for {num_dev} GPUs"
+                )
                 num_dev *= 2
                 continue
             else:
                 logger.info(f"Copying {src_file_path} to {profile_path}")
                 shutil.copy(src_file_path, profile_path)
                 num_dev *= 2
-                
 
 
 def is_active(module_name: str, keep_active: List[str]):
@@ -103,6 +131,7 @@ def is_active(module_name: str, keep_active: List[str]):
         if active_module_subname.lower() in module_name.lower():
             return True
     return False
+
 
 def freeze_model_params_(model, keep_active: List[str], prefix=""):
     if dist.get_rank() == 0:
@@ -132,6 +161,7 @@ def freeze_model_params(model, active_param_config_path: str, prefix=""):
 
     freeze_model_params_(model, keep_active, prefix)
 
+
 def get_resume_path(
     check_resume: bool,
     resume_from: str,
@@ -144,26 +174,31 @@ def get_resume_path(
         return resume_from
 
     # Detect the last checkpoint in CKPT_PATH
-    ckpt_dirs = [ckpt_dir for ckpt_dir in os.listdir(ckpt_save_dir) if len(ckpt_dir.split('-')) == 2 and ckpt_dir.split('-')[0].isdigit()]
+    ckpt_dirs = [
+        ckpt_dir
+        for ckpt_dir in os.listdir(ckpt_save_dir)
+        if len(ckpt_dir.split("-")) == 2 and ckpt_dir.split("-")[0].isdigit()
+    ]
 
     # Filter out directories that do not contain number of ckpts (file name ending with .ckpt) equal to num_gpus (check by os.listdir)
     filtered_ckpt_dirs = []
     for ckpt_dir in ckpt_dirs:
         ckpt_dir_path = os.path.join(ckpt_save_dir, ckpt_dir)
         if os.path.isdir(ckpt_dir_path):
-            ckpt_files = [f for f in os.listdir(ckpt_dir_path) if f.endswith('.ckpt')]
+            ckpt_files = [f for f in os.listdir(ckpt_dir_path) if f.endswith(".ckpt")]
             if len(ckpt_files) == num_gpus:
                 filtered_ckpt_dirs.append(ckpt_dir)
-    
+
     print(f"get_resume_path | filtered_ckpt_dirs = {filtered_ckpt_dirs}")
     if len(filtered_ckpt_dirs) == 0:
         return None
 
-    target_ckpt_dir = sorted(filtered_ckpt_dirs, key=lambda x: (int(x.split('-')[0]), int(x.split('-')[1])))[-1]
+    target_ckpt_dir = sorted(
+        filtered_ckpt_dirs, key=lambda x: (int(x.split("-")[0]), int(x.split("-")[1]))
+    )[-1]
     target_ckpt_dir = os.path.join(ckpt_save_dir, target_ckpt_dir)
     print(f"get_resume_path | target_ckpt_dir = {target_ckpt_dir}")
     return target_ckpt_dir
-
 
 
 def fix_model_state_dict(model, model_state_dict):
@@ -172,29 +207,38 @@ def fix_model_state_dict(model, model_state_dict):
         required_keys_under = {k[6:]: v for k, v in model.dist_param_map.items()}
     else:
         required_keys = model.state_dict().keys()
-        required_keys_under = {k.replace('.', '_'): k for k in required_keys}
-    
-    has_model_prefix = 'model' in model_state_dict
-    model_state_dict = model_state_dict if not has_model_prefix else model_state_dict['model']
+        required_keys_under = {k.replace(".", "_"): k for k in required_keys}
+
+    has_model_prefix = "model" in model_state_dict
+    model_state_dict = (
+        model_state_dict if not has_model_prefix else model_state_dict["model"]
+    )
     model_sd_copy = model_state_dict.copy()
-    
-    if dist.is_initialized() and dist.get_rank() % int(os.getenv("GPU_PER_NODE", "8")) == 0:
+
+    if (
+        dist.is_initialized()
+        and dist.get_rank() % int(os.getenv("GPU_PER_NODE", "8")) == 0
+    ):
         print(f"{__name__} | required_keys[:10]: {required_keys[:10]}")
         print(f"{__name__} | required_keys_under: {required_keys_under}")
-        print(f"{__name__} | model_state_dict.keys()[:10]: {list(model_state_dict.keys())[:10]}") 
+        print(
+            f"{__name__} | model_state_dict.keys()[:10]: {list(model_state_dict.keys())[:10]}"
+        )
 
     for k in model_state_dict.keys():
         model_sd_copy.pop(k)
 
         under_k_start = 0 if not has_model_prefix else 1
-        under_k = '_'.join(k.split('_')[under_k_start:-1])
+        under_k = "_".join(k.split("_")[under_k_start:-1])
 
         if under_k in required_keys_under:
             model_sd_copy[required_keys_under[under_k]] = model_state_dict[k]
 
-    if 'lm_head_weight' in required_keys_under:
+    if "lm_head_weight" in required_keys_under:
         for k in model_state_dict.keys():
-            if 'model_embed_tokens_weight' in k:
-                model_sd_copy[required_keys_under['lm_head_weight']] = model_state_dict[k]
+            if "model_embed_tokens_weight" in k:
+                model_sd_copy[required_keys_under["lm_head_weight"]] = model_state_dict[
+                    k
+                ]
 
     return model_sd_copy

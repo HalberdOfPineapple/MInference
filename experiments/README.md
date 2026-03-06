@@ -43,7 +43,7 @@ Environment parameters:
 To demonstrate the efficiency of our method, we conducted end-to-end latency tests using the [LLaMA-3-8B-Instruct-1M](https://huggingface.co/gradientai/Llama-3-8B-Instruct-Gradient-1048k) model. The prompts were trimmed to different target token numbers, and we measured the pre-filling stage latency without using KV cache.
 
 > [!TIP]
-> To benefit from fast kernel implementations, we recommend installing **SGLang** or **vLLM**. 
+> To benefit from fast kernel implementations, we recommend installing **SGLang** or **vLLM**.
 > for sglang
 > ```bash
 > uv pip install "sglang[all]>=0.4.6.post4"

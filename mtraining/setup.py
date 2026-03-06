@@ -1,4 +1,7 @@
-from setuptools import setup, find_packages
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
+from setuptools import find_packages, setup
 
 setup(
     name="mtraining",  # Name of your project

@@ -1,13 +1,20 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
+from typing import Dict, List, Tuple
+
 import torch
 import torch.distributed as dist
-from typing import List, Tuple, Dict
-from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
+from flash_attn.flash_attn_interface import _flash_attn_backward, _flash_attn_forward
 
 from .utils import (
     RingComm,
-    update_out_and_lse, get_default_args, 
-    shuffle_striped_input, recover_striped_output
+    get_default_args,
+    recover_striped_output,
+    shuffle_striped_input,
+    update_out_and_lse,
 )
+
 
 def stripe_flash_attn_forward(
     process_group,
@@ -23,7 +30,9 @@ def stripe_flash_attn_forward(
     alibi_slopes=None,
     deterministic=False,
 ):
-    assert causal, "stripe flash attn only supports causal attention, if not causal, use ring flash attn instead"
+    assert (
+        causal
+    ), "stripe flash attn only supports causal attention, if not causal, use ring flash attn instead"
     comm = RingComm(process_group)
     bsz, seq_len, num_heads, head_dim = q.shape
 
@@ -61,7 +70,6 @@ def stripe_flash_attn_forward(
             block_out, block_lse, _, _ = outputs
         return block_out, block_lse
 
-
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
             next_k, next_v = comm.send_recv_kv(k, v)
@@ -78,7 +86,11 @@ def stripe_flash_attn_forward(
                 q[:, granularity:], k[:, :-granularity], v[:, :-granularity], causal
             )
             out, lse = update_out_and_lse(
-                out, lse, step_out, step_lse, slice_=(slice(None), slice(granularity, None))
+                out,
+                lse,
+                step_out,
+                step_lse,
+                slice_=(slice(None), slice(granularity, None)),
             )
 
         if step + 1 != comm.world_size:
@@ -122,7 +134,6 @@ def stripe_flash_attn_backward(
     block_dk_buffer = torch.empty(k.shape, dtype=k.dtype, device=k.device)
     block_dv_buffer = torch.empty(v.shape, dtype=v.dtype, device=v.device)
 
-
     def backward(
         granularity_,
     ):
@@ -131,7 +142,10 @@ def stripe_flash_attn_backward(
             dk_, dv_ = block_dk_buffer, block_dv_buffer
         else:
             k_, v_ = k[:, :-granularity_], v[:, :-granularity_]
-            dk_, dv_ = block_dk_buffer[:, :-granularity_], block_dv_buffer[:, :-granularity_]
+            dk_, dv_ = (
+                block_dk_buffer[:, :-granularity_],
+                block_dv_buffer[:, :-granularity_],
+            )
         params = get_default_args(_flash_attn_backward).copy()
         params.update(
             {
@@ -142,7 +156,7 @@ def stripe_flash_attn_backward(
                 "out": out[:, granularity_:],
                 "softmax_lse": softmax_lse[:, :, granularity_:].contiguous(),
                 "dq": block_dq_buffer[:, granularity_:],
-                "dk": dk_, 
+                "dk": dk_,
                 "dv": dv_,
                 "dropout_p": dropout_p,
                 "softmax_scale": softmax_scale,
@@ -160,7 +174,9 @@ def stripe_flash_attn_backward(
                     "window_size_right": window_size[1],
                 }
             )
-        params.update({"rng_state": torch.zeros((2, ), dtype=torch.int64, device=q.device)})
+        params.update(
+            {"rng_state": torch.zeros((2,), dtype=torch.int64, device=q.device)}
+        )
         _flash_attn_backward(**params)
 
     for step in range(kv_comm.world_size):
@@ -207,7 +223,9 @@ class StripeFlashAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        q, k, v,
+        q,
+        k,
+        v,
         layer_idx,
         dropout_p,
         softmax_scale,
@@ -222,19 +240,27 @@ class StripeFlashAttnFunc(torch.autograd.Function):
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
         assert alibi_slopes is None
-        
+
         # -----------------------------------------
         # Shuffle
-        q = shuffle_striped_input(to_send=q, dim=1, granularity=granularity, process_group=group)
-        k = shuffle_striped_input(to_send=k, dim=1, granularity=granularity, process_group=group)
-        v = shuffle_striped_input(to_send=v, dim=1, granularity=granularity, process_group=group)
+        q = shuffle_striped_input(
+            to_send=q, dim=1, granularity=granularity, process_group=group
+        )
+        k = shuffle_striped_input(
+            to_send=k, dim=1, granularity=granularity, process_group=group
+        )
+        v = shuffle_striped_input(
+            to_send=v, dim=1, granularity=granularity, process_group=group
+        )
         k, v = k.contiguous(), v.contiguous()
 
         # ----------------------------------------------
         # Compute
         out, softmax_lse = stripe_flash_attn_forward(
             group,
-            q, k, v,
+            q,
+            k,
+            v,
             layer_idx,
             softmax_scale=softmax_scale,
             granularity=granularity,
@@ -247,9 +273,13 @@ class StripeFlashAttnFunc(torch.autograd.Function):
 
         # ----------------------------------------------
         # Recover outputs
-        recovered_out = recover_striped_output(out, dim=1, granularity=granularity, process_group=group)
+        recovered_out = recover_striped_output(
+            out, dim=1, granularity=granularity, process_group=group
+        )
         if return_softmax:
-            recovered_softmax_lse = recover_striped_output(softmax_lse, dim=2, granularity=granularity, process_group=group)
+            recovered_softmax_lse = recover_striped_output(
+                softmax_lse, dim=2, granularity=granularity, process_group=group
+            )
 
         # ----------------------------------------------
         # this should be out_padded
@@ -275,18 +305,30 @@ class StripeFlashAttnFunc(torch.autograd.Function):
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse = ctx.saved_tensors
         layer_idx = ctx.layer_idx
-        dropout_p, softmax_scale, causal, window_size, alibi_slopes, deterministic, return_softmax, group = (
-            ctx.dropout_p, ctx.softmax_scale, ctx.causal, ctx.window_size,
-            ctx.alibi_slopes, ctx.deterministic, ctx.return_softmax,
-            ctx.group
+        (
+            dropout_p,
+            softmax_scale,
+            causal,
+            window_size,
+            alibi_slopes,
+            deterministic,
+            return_softmax,
+            group,
+        ) = (
+            ctx.dropout_p,
+            ctx.softmax_scale,
+            ctx.causal,
+            ctx.window_size,
+            ctx.alibi_slopes,
+            ctx.deterministic,
+            ctx.return_softmax,
+            ctx.group,
         )
-
 
         # ----------------------------------------------
         # Shuffle
         dout = shuffle_striped_input(
-            to_send=dout, dim=1, granularity=ctx.granularity, 
-            process_group=ctx.group
+            to_send=dout, dim=1, granularity=ctx.granularity, process_group=ctx.group
         )
 
         # ----------------------------------------------
@@ -294,7 +336,11 @@ class StripeFlashAttnFunc(torch.autograd.Function):
         dq, dk, dv = stripe_flash_attn_backward(
             ctx.group,
             dout,
-            q, k, v, out, softmax_lse,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
             layer_idx=layer_idx,
             softmax_scale=ctx.softmax_scale,
             granularity=ctx.granularity,
@@ -304,18 +350,38 @@ class StripeFlashAttnFunc(torch.autograd.Function):
             alibi_slopes=ctx.alibi_slopes,
             deterministic=ctx.deterministic,
         )
-        
 
         # ----------------------------------------------
         # Recover
-        dq = recover_striped_output(dq, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        dk = recover_striped_output(dk, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        dv = recover_striped_output(dv, dim=1, granularity=ctx.granularity, process_group=ctx.group)
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None
+        dq = recover_striped_output(
+            dq, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        dk = recover_striped_output(
+            dk, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        dv = recover_striped_output(
+            dv, dim=1, granularity=ctx.granularity, process_group=ctx.group
+        )
+        return (
+            dq,
+            dk,
+            dv,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 def stripe_flash_attn_qkvpacked_func(
-    qkv, # [B, N, 3, H, D]
+    qkv,  # [B, N, 3, H, D]
     dropout_p=0.0,
     softmax_scale=None,
     granularity=1,

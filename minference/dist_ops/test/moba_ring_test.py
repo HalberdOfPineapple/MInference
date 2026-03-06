@@ -1,17 +1,20 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 from __future__ import annotations
 
-import os
-import pytest
-import random
 import functools
+import os
+import random
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.multiprocessing.spawn import ProcessRaisedException
 
-from minference.ops.utils import set_seed
+from minference.dist_ops.moba_zigzag import moba_zigzag_func
 from minference.dist_ops.test.raw_test_utils import (
     SEED_BASE,
     check_forward_and_qkv_grads,
@@ -20,17 +23,19 @@ from minference.dist_ops.test.raw_test_utils import (
     init_process_group,
     slice_local_inputs,
 )
-from minference.dist_ops.moba_zigzag import moba_zigzag_func
 from minference.ops.moba import moba_attn_func
+from minference.ops.utils import set_seed
 
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-2
 _RTOL = 1e-2
-_WORLD_SIZE = 4 
+_WORLD_SIZE = 4
+
 
 # ------------- helpers --------------------------------------------------------
 def skip_if_cuda_oom(test_func):
     """Decorator: convert worker OOM raised by spawn into a pytest skip."""
+
     @functools.wraps(test_func)
     def _wrapper(*args, **kwargs):
         try:
@@ -40,7 +45,9 @@ def skip_if_cuda_oom(test_func):
                 raise
             torch.cuda.empty_cache()
             pytest.skip("skipped because the GPU ran out of memory")
+
     return _wrapper
+
 
 def _run_worker(
     rank: int,
@@ -62,7 +69,9 @@ def _run_worker(
 
     # ----------------- forward / backward on the candidate kernel ------------
     out_local = moba_zigzag_func(
-        q_local, k_local, v_local, 
+        q_local,
+        k_local,
+        v_local,
         layer_idx=0,
         global_seq_len=cfg.seq_len,
         moba_chunk_size=cfg.moba_chunk_size,
@@ -84,7 +93,9 @@ def _run_worker(
         v_ref = v.detach().clone().requires_grad_()
 
         out_ref = moba_attn_func(
-            q_ref, k_ref, v_ref,
+            q_ref,
+            k_ref,
+            v_ref,
             global_seq_len=cfg.seq_len,
             moba_chunk_size=cfg.moba_chunk_size,
             moba_topk=cfg.moba_topk,
@@ -109,8 +120,8 @@ def _run_worker(
 # ------------- pytest entry-point --------------------------------------------
 @skip_if_cuda_oom
 @pytest.mark.skipif(torch.cuda.device_count() < _WORLD_SIZE, reason="Not enough GPUs")
-@pytest.mark.parametrize("seq_len",   [16384, 32768])
-@pytest.mark.parametrize("head_dim",  [64, 128])
+@pytest.mark.parametrize("seq_len", [16384, 32768])
+@pytest.mark.parametrize("head_dim", [64, 128])
 @pytest.mark.parametrize("num_qkv_head_pair", [(4, 1), (4, 4)])
 @pytest.mark.parametrize("moba_chunk_size", [128, 256])
 @pytest.mark.parametrize("moba_topk", [8, 16])
@@ -137,7 +148,7 @@ def test_moba_kernels(
         moba_chunk_size=moba_chunk_size,
         moba_topk=moba_topk,
     )
-  
+
     print(f"=" * 80)
     print(f"Testing MoBA (w. Zigzag) with configuration:\n{cfg}")
     print(f"=" * 80)

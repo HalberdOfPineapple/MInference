@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 #  Copyright (c) Microsoft Corporation.
 #  Licensed under the MIT License.
 
@@ -5,12 +8,13 @@
 
 import torch
 import torch.distributed as dist
-from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
+from flash_attn.flash_attn_interface import _flash_attn_backward, _flash_attn_forward
 
-from .utils import shuffle_zigzag_input, recover_zigzag_output, GlobalMemoryBuffer
-
+from .utils import GlobalMemoryBuffer, recover_zigzag_output, shuffle_zigzag_input
 
 _GLOBAL_MEMORY_BUFFER = GlobalMemoryBuffer()
+
+
 def ring_flash_attn_forward(
     process_group,
     q: torch.Tensor,
@@ -34,8 +38,8 @@ def ring_flash_attn_forward(
 
     up_q = q[:, :block_len]
     if causal:
-        up_k = k[:, :(up_rank + 1) * block_len]
-        up_v = v[:, :(up_rank + 1) * block_len]
+        up_k = k[:, : (up_rank + 1) * block_len]
+        up_v = v[:, : (up_rank + 1) * block_len]
     else:
         up_k, up_v = k, v
     up_out, _, _, _, _, up_lse, _, _ = _flash_attn_forward(
@@ -52,8 +56,8 @@ def ring_flash_attn_forward(
 
     down_q = q[:, block_len:]
     if causal:
-        down_k = k[:, :(down_rank + 1) * block_len]
-        down_v = v[:, :(down_rank + 1) * block_len]
+        down_k = k[:, : (down_rank + 1) * block_len]
+        down_v = v[:, : (down_rank + 1) * block_len]
     else:
         down_k, down_v = k, v
     down_out, _, _, _, _, down_lse, _, _ = _flash_attn_forward(
@@ -107,8 +111,8 @@ def ring_flash_attn_backward(
     up_out = out[:, :block_len]
     up_dout = dout[:, :block_len]
     if causal:
-        up_k = k[:, :(up_rank + 1) * block_len]
-        up_v = v[:, :(up_rank + 1) * block_len]
+        up_k = k[:, : (up_rank + 1) * block_len]
+        up_v = v[:, : (up_rank + 1) * block_len]
     else:
         up_k, up_v = k, v
     _flash_attn_backward(
@@ -119,8 +123,8 @@ def ring_flash_attn_backward(
         up_out,
         up_lse,
         dq[:, :block_len],
-        dk_buffer[:, :(up_rank + 1) * block_len],
-        dv_buffer[:, :(up_rank + 1) * block_len],
+        dk_buffer[:, : (up_rank + 1) * block_len],
+        dv_buffer[:, : (up_rank + 1) * block_len],
         dropout_p,
         softmax_scale,
         causal,
@@ -139,8 +143,8 @@ def ring_flash_attn_backward(
     down_dv_buffer = _GLOBAL_MEMORY_BUFFER.get_tensor(v.size(), v.dtype, "bwd_down_dv")
     down_dv_buffer.zero_()
     if causal:
-        down_k = k[:, :(down_rank + 1) * block_len]
-        down_v = v[:, :(down_rank + 1) * block_len]
+        down_k = k[:, : (down_rank + 1) * block_len]
+        down_v = v[:, : (down_rank + 1) * block_len]
     else:
         down_k, down_v = k, v
     _flash_attn_backward(
@@ -151,8 +155,8 @@ def ring_flash_attn_backward(
         down_out,
         down_lse,
         dq[:, block_len:],
-        down_dk_buffer[:, :(down_rank + 1) * block_len],
-        down_dv_buffer[:, :(down_rank + 1) * block_len],
+        down_dk_buffer[:, : (down_rank + 1) * block_len],
+        down_dv_buffer[:, : (down_rank + 1) * block_len],
         dropout_p,
         softmax_scale,
         causal,
@@ -170,19 +174,20 @@ def ring_flash_attn_backward(
     dv = torch.empty(dim_size, dtype=v.dtype, device=v.device)
     dist._reduce_scatter_base(dk, dk_buffer, group=process_group)
     dist._reduce_scatter_base(dv, dv_buffer, group=process_group)
-    
+
     return dq, dk, dv
 
 
-'''
+"""
 In nnscaler, sequence are stored in the initial order, e.g., [0 1 2 3 4 5 6 7].
 However, ring flash attention requires the sequence to be in the order of [0 7 2 5 3 4 1 6].
 As a result:
 - in forward, we need to shuffle q, all gather k, v and recover the out
 - in backward, we need to shuffle dout and recover the dq, reduce scatter dk, dv
-'''
-class RingFlashAttnFunc(torch.autograd.Function):
+"""
 
+
+class RingFlashAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,

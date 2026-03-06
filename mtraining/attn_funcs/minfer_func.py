@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 #  Copyright (c) Microsoft Corporation.
 #  Licensed under the MIT License.
 
@@ -5,26 +8,34 @@
 # 1. register the flash attention function to nnscaler and update related code
 # 2. replace the un-fused RMSNorm with apex's fused version
 import json
-import torch
 import logging
+
+import torch
+
 logger = logging.getLogger(__name__)
 
-from typing import List, Optional, Tuple, Dict, Callable
-from transformers.utils import logging, is_flash_attn_2_available
-if is_flash_attn_2_available(): from flash_attn import flash_attn_func
+from typing import Callable, Dict, List, Optional, Tuple
 
-from nnscaler.runtime.device import DeviceGroup
+from transformers.utils import is_flash_attn_2_available, logging
+
+if is_flash_attn_2_available():
+    from flash_attn import flash_attn_func
+
 from nnscaler.graph.parser.register import register_op
 from nnscaler.ir import IRTensor
 from nnscaler.ir.operator import IRFwOperation
+from nnscaler.runtime.device import DeviceGroup
 
-from minference.ops.utils import use_triton
-from minference.ops.pit_sparse_flash_attention_v3 import (
-    minference_flash_attn_func, minference_flash_attn_triton_func
-)
 from minference.dist_ops import (
-    minfer_stripe_func, minfer_zigzag_func, minfer_dr_stripe_func,
+    minfer_dr_stripe_func,
+    minfer_stripe_func,
+    minfer_zigzag_func,
 )
+from minference.ops.pit_sparse_flash_attention_v3 import (
+    minference_flash_attn_func,
+    minference_flash_attn_triton_func,
+)
+from minference.ops.utils import use_triton
 
 
 # =======================================================
@@ -33,25 +44,28 @@ def minfer_op(
     key_states: torch.Tensor,
     value_states: torch.Tensor,
     head_indices: torch.Tensor,
-
     bsz: int,
     q_len: int,
     head_dim: int,
     layer_idx: int,
-
     pattern_dict: Dict[int, Tuple[str, int, int, int]],
-    attn_dropout: float=0.,
+    attn_dropout: float = 0.0,
     granularity: int = 128,
     group: Optional[torch.distributed.ProcessGroup] = None,
 ):
-    v_sizes = [pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))]
-    s_sizes = [pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))]
+    v_sizes = [
+        pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))
+    ]
+    s_sizes = [
+        pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))
+    ]
     if not use_triton():
         attn_output = minference_flash_attn_func(
             query_states.transpose(1, 2).contiguous(),
             key_states.transpose(1, 2).contiguous(),
             value_states.transpose(1, 2).contiguous(),
-            v_sizes, s_sizes,
+            v_sizes,
+            s_sizes,
             attn_dropout,
             softmax_scale=None,
             granularity=granularity,
@@ -66,7 +80,8 @@ def minfer_op(
             query_states.transpose(1, 2).contiguous(),
             key_states.transpose(1, 2).contiguous(),
             value_states.transpose(1, 2).contiguous(),
-            v_sizes, s_sizes,
+            v_sizes,
+            s_sizes,
             attn_dropout,
             softmax_scale=None,
             granularity=granularity,
@@ -80,7 +95,7 @@ def minfer_op(
 
 
 def minfer_stripe_op(
-    query_states: torch.Tensor, # [batch_size, num_heads, num_tokens, head_dim]
+    query_states: torch.Tensor,  # [batch_size, num_heads, num_tokens, head_dim]
     key_states: torch.Tensor,
     value_states: torch.Tensor,
     head_indices: torch.Tensor,
@@ -89,28 +104,36 @@ def minfer_stripe_op(
     head_dim: int,
     layer_idx: int,
     pattern_dict: Dict[int, Tuple[str, int, int, int]],
-    attn_dropout: float=0.,
+    attn_dropout: float = 0.0,
     granularity: int = 128,
     process_group: Optional[torch.distributed.ProcessGroup] = None,
 ):
-    if (process_group is None or len(process_group) == 1):
+    if process_group is None or len(process_group) == 1:
         softmax_scale = query_states.shape[-1] ** (-0.5)
 
         output = flash_attn_func(
             query_states.transpose(1, 2),
             key_states.transpose(1, 2),
             value_states.transpose(1, 2),
-            attn_dropout, softmax_scale, causal=True)
+            attn_dropout,
+            softmax_scale,
+            causal=True,
+        )
         return output
     group = DeviceGroup().get_group(process_group)
 
-    v_sizes = [pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))]
-    s_sizes = [pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))]
+    v_sizes = [
+        pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))
+    ]
+    s_sizes = [
+        pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))
+    ]
     attn_output = minfer_stripe_func(
         query_states.transpose(1, 2).contiguous(),
         key_states.transpose(1, 2).contiguous(),
         value_states.transpose(1, 2).contiguous(),
-        v_sizes, s_sizes,
+        v_sizes,
+        s_sizes,
         layer_idx,
         attn_dropout,
         softmax_scale=None,
@@ -120,24 +143,22 @@ def minfer_stripe_op(
         deterministic=False,
         return_attn_probs=False,
         group=group,
-    ) # expect:  b {q_anno} l^ vd^'
-   
+    )  # expect:  b {q_anno} l^ vd^'
+
     return attn_output.contiguous()
 
 
 def minfer_zigzag_op(
-    query_states: torch.Tensor, # [batch_size, num_heads, num_tokens, head_dim]
+    query_states: torch.Tensor,  # [batch_size, num_heads, num_tokens, head_dim]
     key_states: torch.Tensor,
     value_states: torch.Tensor,
     head_indices: torch.Tensor,
-
     bsz: int,
     q_len: int,
     head_dim: int,
     layer_idx: int,
-    
     pattern_dict: Dict[int, Tuple[str, int, int, int]],
-    attn_dropout: float=0.,
+    attn_dropout: float = 0.0,
     granularity: int = 128,
     process_group: Optional[torch.distributed.ProcessGroup] = None,
 ):
@@ -149,18 +170,26 @@ def minfer_zigzag_op(
             query_states.transpose(1, 2),
             key_states.transpose(1, 2),
             value_states.transpose(1, 2),
-            attn_dropout, softmax_scale, causal=True)
+            attn_dropout,
+            softmax_scale,
+            causal=True,
+        )
         return output
     group = DeviceGroup().get_group(process_group)
 
-    v_sizes = [pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))]
-    s_sizes = [pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))]
+    v_sizes = [
+        pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))
+    ]
+    s_sizes = [
+        pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))
+    ]
     if not use_triton():
         attn_output = minfer_zigzag_func(
             query_states.transpose(1, 2).contiguous(),
             key_states.transpose(1, 2).contiguous(),
             value_states.transpose(1, 2).contiguous(),
-            v_sizes, s_sizes,
+            v_sizes,
+            s_sizes,
             layer_idx,
             attn_dropout,
             softmax_scale=None,
@@ -170,13 +199,16 @@ def minfer_zigzag_op(
             deterministic=False,
             return_attn_probs=False,
             group=group,
-        ) # expect:  b {q_anno} l^ vd^'
+        )  # expect:  b {q_anno} l^ vd^'
     else:
-        raise NotImplementedError("Triton-only version is not implemented for MInfer w. zigzag")
+        raise NotImplementedError(
+            "Triton-only version is not implemented for MInfer w. zigzag"
+        )
     return attn_output.contiguous()
 
+
 def minfer_dr_stripe_op(
-    query_states: torch.Tensor, # [batch_size, num_heads, num_tokens, head_dim]
+    query_states: torch.Tensor,  # [batch_size, num_heads, num_tokens, head_dim]
     key_states: torch.Tensor,
     value_states: torch.Tensor,
     head_indices: torch.Tensor,
@@ -184,13 +216,12 @@ def minfer_dr_stripe_op(
     q_len: int,
     head_dim: int,
     layer_idx: int,
-    
     pattern_dict: Dict[int, Tuple[str, int, int, int]],
-    attn_dropout: float=0.,
+    attn_dropout: float = 0.0,
     granularity: int = 128,
     process_group: Optional[torch.distributed.ProcessGroup] = None,
 ):
-    if (process_group is None or len(process_group) == 1):
+    if process_group is None or len(process_group) == 1:
         # there is an additional checker for the `softmax_scale`, which is equivalent
         # to the behavior of the original flash_attn_func.
         softmax_scale = query_states.shape[-1] ** (-0.5)
@@ -199,18 +230,26 @@ def minfer_dr_stripe_op(
             query_states.transpose(1, 2),
             key_states.transpose(1, 2),
             value_states.transpose(1, 2),
-            attn_dropout, softmax_scale, causal=True)
+            attn_dropout,
+            softmax_scale,
+            causal=True,
+        )
         return output
 
     group = DeviceGroup().get_group(process_group)
-    v_sizes = [pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))]
-    s_sizes = [pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))]
+    v_sizes = [
+        pattern_dict[head_indices[idx].item()][1] for idx in range(query_states.size(1))
+    ]
+    s_sizes = [
+        pattern_dict[head_indices[idx].item()][2] for idx in range(query_states.size(1))
+    ]
 
     attn_output = minfer_dr_stripe_func(
         query_states.transpose(1, 2).contiguous(),
         key_states.transpose(1, 2).contiguous(),
         value_states.transpose(1, 2).contiguous(),
-        v_sizes, s_sizes,
+        v_sizes,
+        s_sizes,
         layer_idx,
         attn_dropout,
         softmax_scale=None,
@@ -220,9 +259,8 @@ def minfer_dr_stripe_op(
         deterministic=False,
         return_attn_probs=False,
         group=group,
-    ) # expect:  b {q_anno} l^ vd^'
+    )  # expect:  b {q_anno} l^ vd^'
     return attn_output.contiguous()
-
 
 
 MINFER_IMPLEMENTATIONS: Dict[str, Callable] = {
@@ -232,7 +270,15 @@ MINFER_IMPLEMENTATIONS: Dict[str, Callable] = {
     "dr_stripe": minfer_dr_stripe_op,
 }
 
-def emit_minfer_ring(node: IRFwOperation, args: List[str], kwargs: Dict[str, str], runtime_devid: int, plan_ndevs: int, runtime_ndevs: int) -> str:
+
+def emit_minfer_ring(
+    node: IRFwOperation,
+    args: List[str],
+    kwargs: Dict[str, str],
+    runtime_devid: int,
+    plan_ndevs: int,
+    runtime_ndevs: int,
+) -> str:
     """Special rule to generate zigzag_attn node"""
 
     signature = node.signature
@@ -242,55 +288,64 @@ def emit_minfer_ring(node: IRFwOperation, args: List[str], kwargs: Dict[str, str
 
     kw_pairs = list()
     for key, val in kwargs.items():
-        code = f'{key}={val}'
+        code = f"{key}={val}"
         kw_pairs.append(code)
 
     sub_input = node.inputs()[0]
     full_input = sub_input.parent
-    partition_dims = [i for i, (s, f) in enumerate(zip(sub_input.shape, full_input.shape)) if s != f]
-    assert len(partition_dims) <= 1, f"support no more than one partition dim, but got {partition_dims}"
+    partition_dims = [
+        i for i, (s, f) in enumerate(zip(sub_input.shape, full_input.shape)) if s != f
+    ]
+    assert (
+        len(partition_dims) <= 1
+    ), f"support no more than one partition dim, but got {partition_dims}"
     if not partition_dims:
         kw_pairs.append("process_group=None")
     else:
         # if the 'process_group' is None, we will use the local attention (flash_attn_func)
-        if partition_dims[0] == 0: # partition on batch dim
+        if partition_dims[0] == 0:  # partition on batch dim
             # partition the bsz dim, use local flash_attn_func
             kw_pairs.append("process_group=None")
         elif partition_dims[0] == 1:
             # partition on num_head dim
             kw_pairs.append("process_group=None")
-        elif partition_dims[0] == 2: # partition on sequence dim
+        elif partition_dims[0] == 2:  # partition on sequence dim
             # the synchronization should occur across scaleunits
             kw_pairs.append(f"process_group={scale_unit_dev_ids}")
         else:
-            raise ValueError(f'unsupported partition dim: {partition_dims[0]}')
+            raise ValueError(f"unsupported partition dim: {partition_dims[0]}")
 
     args = ", ".join(list(args) + kw_pairs)
     return f"{signature}({args})"
+
 
 def minfer_attn_anno(query_states, key_states, value_states, *args, **kwargs) -> str:
     if query_states.shape[1] != key_states.shape[1]:
         assert query_states.shape[1] % key_states.shape[1] == 0
         group_size = query_states.shape[1] // key_states.shape[1]
         assert query_states.shape[1] == value_states.shape[1] * group_size
-        q_anno = f'(group_num {group_size})'
-        kv_anno = 'group_num'
+        q_anno = f"(group_num {group_size})"
+        kv_anno = "group_num"
     else:
-        q_anno = kv_anno = 'num_heads'
+        q_anno = kv_anno = "num_heads"
 
-    return f'b {q_anno} l^ hd^, b {kv_anno} s^ hd^, b {kv_anno} s^ vd^, {q_anno} -> b l^ {q_anno} vd^'
+    return f"b {q_anno} l^ hd^, b {kv_anno} s^ hd^, b {kv_anno} s^ vd^, {q_anno} -> b l^ {q_anno} vd^"
 
-def minfer_attn_ring_anno(query_states, key_states, value_states, *args, **kwargs) -> str:
+
+def minfer_attn_ring_anno(
+    query_states, key_states, value_states, *args, **kwargs
+) -> str:
     if query_states.shape[1] != key_states.shape[1]:
         assert query_states.shape[1] % key_states.shape[1] == 0
         group_size = query_states.shape[1] // key_states.shape[1]
         assert query_states.shape[1] == value_states.shape[1] * group_size
-        q_anno = f'(group_num {group_size})'
-        kv_anno = 'group_num'
+        q_anno = f"(group_num {group_size})"
+        kv_anno = "group_num"
     else:
-        q_anno = kv_anno = 'num_heads'
+        q_anno = kv_anno = "num_heads"
 
-    return f'b {q_anno} l hd^, b {kv_anno} l hd^, b {kv_anno} l vd^, {q_anno} -> b l {q_anno} vd^'
+    return f"b {q_anno} l hd^, b {kv_anno} l hd^, b {kv_anno} l vd^, {q_anno} -> b l {q_anno} vd^"
+
 
 if __name__ != "__main__":
     register_op(minfer_attn_anno)(minfer_op)
@@ -298,17 +353,20 @@ if __name__ != "__main__":
     register_op(minfer_attn_ring_anno, emit_fn=emit_minfer_ring)(minfer_zigzag_op)
     register_op(minfer_attn_ring_anno, emit_fn=emit_minfer_ring)(minfer_dr_stripe_op)
 
+
 class MInferAttnFunc:
     def __init__(self):
         self.initialized = False
-    
+
     def init_minfer_params(
         self,
         config_path: str,
-        minfer_implementation: str, # "fa", "stripe", "zigzag"
+        minfer_implementation: str,  # "fa", "stripe", "zigzag"
         granularity: int = 128,
     ):
-        assert minfer_implementation in MINFER_IMPLEMENTATIONS, f"minfer_implementation should be one of {MINFER_IMPLEMENTATIONS}, but got {self.minfer_implementation}"
+        assert (
+            minfer_implementation in MINFER_IMPLEMENTATIONS
+        ), f"minfer_implementation should be one of {MINFER_IMPLEMENTATIONS}, but got {self.minfer_implementation}"
         self.minfer_implementation: str = minfer_implementation
 
         self.config_path = config_path
@@ -316,10 +374,10 @@ class MInferAttnFunc:
         self.granularity = granularity
 
         self.initialized = True
-    
+
     def get_pattern_dict(self, layer_idx):
         return {int(ii): jj for ii, jj in self.all_pattern_dict[layer_idx].items()}
-    
+
     def forward(
         self,
         query_states: torch.Tensor,
@@ -327,17 +385,27 @@ class MInferAttnFunc:
         value_states: torch.Tensor,
         head_indices: torch.Tensor,
         attn_module_config: Dict[str, int],
-        attn_dropout: float=0.0,
+        attn_dropout: float = 0.0,
     ):
         bsz, q_len = query_states.shape[0], query_states.shape[2]
-        head_dim, layer_idx = attn_module_config["head_dim"], attn_module_config["layer_idx"]
-        
+        head_dim, layer_idx = (
+            attn_module_config["head_dim"],
+            attn_module_config["layer_idx"],
+        )
+
         pattern_dict = self.get_pattern_dict(layer_idx)
         minfer_args = (
-            query_states, key_states, value_states, 
+            query_states,
+            key_states,
+            value_states,
             head_indices,
-            bsz, q_len, head_dim, layer_idx,
-            pattern_dict, attn_dropout, self.granularity,
+            bsz,
+            q_len,
+            head_dim,
+            layer_idx,
+            pattern_dict,
+            attn_dropout,
+            self.granularity,
         )
 
         if self.minfer_implementation == "default":
@@ -349,11 +417,14 @@ class MInferAttnFunc:
         elif self.minfer_implementation == "dr_stripe":
             return minfer_dr_stripe_op(*minfer_args)
         else:
-            raise ValueError(f"Unsupported minfer_implementation: {self.minfer_implementation}")
+            raise ValueError(
+                f"Unsupported minfer_implementation: {self.minfer_implementation}"
+            )
+
 
 def minfer_attention_forward(
     module: torch.nn.Module,
-    query: torch.Tensor, # [B, H, N, D]
+    query: torch.Tensor,  # [B, H, N, D]
     key: torch.Tensor,
     value: torch.Tensor,
     attention_mask: Optional[torch.Tensor],
@@ -362,16 +433,24 @@ def minfer_attention_forward(
     sliding_window: Optional[int] = None,
     softcap: Optional[float] = None,
     **kwargs,
-) -> Tuple[torch.Tensor, None]: 
+) -> Tuple[torch.Tensor, None]:
     attn_module_config = {
         "num_heads": module.config.num_attention_heads,
         "head_dim": module.head_dim,
         "layer_idx": module.layer_idx,
     }
-    head_indices = torch.arange(attn_module_config["num_heads"], device=query.device, dtype=torch.int32)
+    head_indices = torch.arange(
+        attn_module_config["num_heads"], device=query.device, dtype=torch.int32
+    )
 
-    return module.minfer_attn_func.forward(
-        query, key, value, head_indices,
-        attn_module_config,
-        dropout,
-    ), None
+    return (
+        module.minfer_attn_func.forward(
+            query,
+            key,
+            value,
+            head_indices,
+            attn_module_config,
+            dropout,
+        ),
+        None,
+    )

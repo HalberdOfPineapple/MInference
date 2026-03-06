@@ -1,16 +1,20 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 """A clean version of moba implementation for educational purposes"""
 import math
-import torch
+from typing import Callable, Optional, Tuple, Union
 
+import torch
 from einops import rearrange
-from typing import Union, Tuple, Callable, Optional
-from flash_attn import flash_attn_varlen_func, flash_attn_func
+from flash_attn import flash_attn_func, flash_attn_varlen_func
 from flash_attn.flash_attn_interface import (
-    _flash_attn_varlen_forward,
     _flash_attn_varlen_backward,
+    _flash_attn_varlen_forward,
 )
 
 from .op_utils.moba_utils import calc_chunks
+
 
 def hf_to_fa(x: torch.Tensor):
     """
@@ -403,7 +407,7 @@ def moba_attn_varlen(
     filtered_kv_indices += cu_chunk[filtered_chunk_indices][:, None]
 
     # select the elements of KV corresponding to all chunks that are not filtered out
-    filtered_kv = kv.index_select(0, filtered_kv_indices.view(-1)) 
+    filtered_kv = kv.index_select(0, filtered_kv_indices.view(-1))
 
     """ calc key_gate_weight and gate """
     # key_gate_weight [ F_N_CHUNK, HEAD, HEAD_DIM ]
@@ -446,7 +450,7 @@ def moba_attn_varlen(
     gate_idx_mask = torch.zeros(gate_mask.shape, dtype=torch.bool, device=q.device)
     gate_idx_mask = gate_idx_mask.scatter_(dim=0, index=gate_top_k_idx, value=True)
 
-    # gate_mask has the shape [ N_CHUNK, HEAD, SEQ ]. 
+    # gate_mask has the shape [ N_CHUNK, HEAD, SEQ ].
     # For each chunk, the sequence-dimension indices will be True if it belongs to the top-K chunks
     gate_mask = torch.logical_and(gate_mask, gate_idx_mask)
     # ---------------------------------------------------------------------------------------------
@@ -500,7 +504,7 @@ def moba_attn_varlen(
     # -----------------------------------------------
     moba_kv = rearrange(filtered_kv, "s x h d -> h s x d") # here `x` only stands for a dimension (stack dimension for KV)
 
-    moba_kv = moba_kv.split(moba_chunk_size, dim=1) 
+    moba_kv = moba_kv.split(moba_chunk_size, dim=1)
     moba_kv = torch.cat(moba_kv, dim=0) # [num_selected_chunks, H x S // moba_chunk_size, D]
 
     if zero_expert_count > 0:
@@ -570,7 +574,7 @@ def moba_attn_func(
         moba_chunk_size,
         moba_topk,
     ).view(q.shape)
-    
+
 
 def moba_layer(
     moba_impl: Callable,

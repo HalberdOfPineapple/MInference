@@ -1,14 +1,19 @@
-# Copyright (c) 2025 Microsoft
+# Copyright (c) 2025-2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 # Refer to the code in https://github.com/mit-han-lab/x-attention
 import math
-import torch
-from typing import List, Tuple, Dict, Any
+from typing import Any, Dict, List, Tuple
 
-from minference.ops.pit_sparse_flash_attention_v3 import block_attn_fwd, block_attn_bwd
+import torch
+
 from minference.ops.op_utils.xattn_utils import (
-    LN2, find_blocks_chunked, flat_group_gemm_fuse_reshape, softmax_fuse_block_sum
+    LN2,
+    find_blocks_chunked,
+    flat_group_gemm_fuse_reshape,
+    softmax_fuse_block_sum,
 )
+from minference.ops.pit_sparse_flash_attention_v3 import block_attn_bwd, block_attn_fwd
+
 
 def xattn_estimate(
     query_states: torch.Tensor, # (batch_size, num_q_head, q_len, head_dim)
@@ -88,8 +93,8 @@ def xattn_estimate(
             1 / LN2 / math.sqrt(head_dim) / stride / norm,
             is_causal=causal,
         )
-        
-        
+
+
         # (batch_size, head_num, num_blocks_per_chunk, block_num)
         simple_mask = find_blocks_chunked(
             attn_sum,
@@ -124,8 +129,8 @@ def xattn_estimate(
             False,
         )
         # print(f"{__name__} | simple_masks[:, :, -q_block_num:, -q_block_num:].shape {simple_masks[:, :, -q_block_num:, -q_block_num:].shape} after torch.where")
-    
-    
+
+
     if keep_sink:
         simple_masks[:, :, 0, :] = True
     if keep_recent:
@@ -150,7 +155,7 @@ class XAttnFunc(torch.autograd.Function):
         k: torch.Tensor,
         v: torch.Tensor,
         head_indices,
-        xattn_params, # Dict[str, Any] 
+        xattn_params, # Dict[str, Any]
         granularity,
         causal,
         softmax_scale,
@@ -164,8 +169,8 @@ class XAttnFunc(torch.autograd.Function):
         q_block_num = (q.shape[1] + granularity - 1) // granularity
         # (batch_size, head_num, q_block_num, q_block_num)
         _, block_mask = xattn_estimate(
-            q.transpose(1, 2), k.transpose(1, 2), 
-            granularity, 
+            q.transpose(1, 2), k.transpose(1, 2),
+            granularity,
             **xattn_params
         )
         block_mask = block_mask[:, :, -q_block_num:, -q_block_num:].contiguous()
@@ -209,7 +214,7 @@ def xattn_flash_attn_func(
     k: torch.Tensor,  # [batch_size, num_tokens, num_kv_heads, head_dim]
     v: torch.Tensor,  # [batch_size, num_tokens, num_kv_heads, head_dim]
     head_indices: List[int], # [num_qo_heads]
-    xattn_params: Dict[str, Any], 
+    xattn_params: Dict[str, Any],
     granularity: int = 128,
     dropout_p: int = 0.0,
     softmax_scale: float = None,
@@ -239,7 +244,9 @@ def xattn_flash_attn_func(
 
 if __name__ == "__main__":
     import argparse
+
     from flash_attn import flash_attn_func
+
     from minference.ops.utils import set_seed
 
 
@@ -254,9 +261,9 @@ if __name__ == "__main__":
     # dtype = torch.bfloat16
     dtype = torch.float16
     device = torch.device(f"cuda:0")
-    torch.cuda.set_device(device)    
+    torch.cuda.set_device(device)
     set_seed(2025)
-    
+
     batch_size, seq_len, num_q_heads, head_dim = 1, args.seq_len, 8, 128
     num_kv_heads = 4
     head_indices = list(range(num_q_heads))
@@ -304,7 +311,7 @@ if __name__ == "__main__":
     ref_out = flash_attn_func(
         q_ref, k_ref, v_ref,
         causal=True,
-        softmax_scale=head_dim ** (-0.5) 
+        softmax_scale=head_dim ** (-0.5)
     )
 
 
@@ -312,7 +319,7 @@ if __name__ == "__main__":
     if not torch.allclose(out, ref_out, atol=ATOL, rtol=RTOL):
         num_blocks = seq_len // granularity
         for i in range(num_blocks):
-            start = i * granularity 
+            start = i * granularity
             end = (i + 1) * granularity
             out_chunk = out[:, start:end, :, :]
             ref_out_chunk = ref_out[:, start:end, :, :]
@@ -326,44 +333,44 @@ if __name__ == "__main__":
                 print(f"Forward Output match at chunk {i}")
     else:
         print("Forward Output match")
-    
+
 
     # Backward pass testing
     if args.test_backward:
         print("\nTesting backward pass...")
-        
+
         # Create gradient for backward pass
         grad_output = torch.randn_like(out)
         grad_output_ref = grad_output.clone()
-        
+
         # Backward pass for custom implementation
         out.backward(grad_output)
-        
+
         # Backward pass for reference implementation
         ref_out.backward(grad_output_ref)
-        
+
         # Compare gradients
         print("\nGradient comparison:")
-        
+
         # Compare q gradients
         q_grad_match = torch.allclose(q.grad, q_ref.grad, atol=ATOL, rtol=RTOL)
         print(f"q grad match: {q_grad_match}")
         if not q_grad_match:
             q_diff = (q.grad - q_ref.grad).abs()
             print(f"q grad max diff: {q_diff.max().item()}, mean diff: {q_diff.mean().item()}")
-        
+
         # Compare k gradients
         k_grad_match = torch.allclose(k.grad, k_ref.grad, atol=ATOL, rtol=RTOL)
         print(f"k grad match: {k_grad_match}")
         if not k_grad_match:
             k_diff = (k.grad - k_ref.grad).abs()
             print(f"k grad max diff: {k_diff.max().item()}, mean diff: {k_diff.mean().item()}")
-        
+
         # Compare v gradients
         v_grad_match = torch.allclose(v.grad, v_ref.grad, atol=ATOL, rtol=RTOL)
         print(f"v grad match: {v_grad_match}")
         if not v_grad_match:
             v_diff = (v.grad - v_ref.grad).abs()
             print(f"v grad max diff: {v_diff.max().item()}, mean diff: {v_diff.mean().item()}")
-        
+
         print(f"\nOverall gradient match: {q_grad_match and k_grad_match and v_grad_match}")

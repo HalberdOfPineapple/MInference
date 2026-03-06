@@ -1,5 +1,7 @@
 #!/usr/bin/bash
 
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
 
 # conda activate mtrain
 i=$(hostname | awk -F'-' '{print $2}')
@@ -37,7 +39,7 @@ cd $EXPR_HOME
 export EXPR_DIR="dense_qwen" # Name for the experiment set
 export EXPR_NAME="qwen_3B_dense" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
-export DATASET_PATH="/scratch/datasets/processed_datasets_qwen2_7B_4_gpus/long-context-524288"
+export DATASET_PATH="/scratch/datasets/processed_datasets/long-context-524288"
 export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
@@ -49,7 +51,7 @@ export ATTN_TYPE="zigzag_ring"
 export TF_LOG_PATH="$EXPR_DATA_STORE/$EXPR_DIR/tf_logs"
 export CKPT_PATH="$EXPR_DATA_STORE/$EXPR_DIR/$EXPR_NAME/checkpoints"
 export COMPILE_PATH="$EXPR_DATA_STORE/compile_config/rank_${NODE_RANK}"
-export PAS_PROFILE_DIR="$EXPR_DATA_STORE/$EXPR_DIR/$EXPR_NAME//pas_profile"
+export PAS_PROFILE_DIR="$EXPR_DATA_STORE/$EXPR_DIR/$EXPR_NAME/pas_profile"
 mkdir -p $TF_LOG_PATH
 mkdir -p $CKPT_PATH
 mkdir -p $COMPILE_PATH
