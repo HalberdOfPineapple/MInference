@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

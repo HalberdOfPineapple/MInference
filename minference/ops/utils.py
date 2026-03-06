@@ -1,5 +1,10 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 import os
+
 import torch
+
 
 def set_seed(seed=42):
     torch.manual_seed(seed)
@@ -29,7 +34,7 @@ def check_correctness_by_row(
                     print(f"Mismatched {tensor_name} at Head {h}, Row {i}:\n")
                     print(f"Computed:\n{tensor_var_row}\n")
                     print(f"Ref:\n{ref_tensor_var_row}\n")
-                    
+
                     max_diff = torch.max(torch.abs(tensor_var_row - ref_tensor_var_row))
                     print(f"Maximal difference: {max_diff.item()}\n")
         return False

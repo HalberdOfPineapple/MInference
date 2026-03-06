@@ -1,7 +1,10 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 import torch
+import torch.distributed as dist
 import triton
 import triton.language as tl
-import torch.distributed as dist
 
 LN2 = 1 / 1.4426950408889634
 def create_causal_mask(batch_size, head_num, block_size, block_num, divide_block_num):
@@ -17,7 +20,7 @@ def create_causal_mask(batch_size, head_num, block_size, block_num, divide_block
 
         Returns:
         - torch.Tensor: A mask tensor of shape (batch_size, head_num, block_size, total_size)
-        where total_size = block_size * block_num. The mask enforces causal attention by 
+        where total_size = block_size * block_num. The mask enforces causal attention by
         setting certain positions to `-inf` to prevent information leakage from future tokens.
     """
     divide_block_num += 1
@@ -47,11 +50,11 @@ def create_causal_mask(batch_size, head_num, block_size, block_num, divide_block
 
 def find_blocks_chunked(
     input_tensor: torch.Tensor, # (batch_size, num_heads, num_block_q, num_block_k)
-    current_index, # 
+    current_index, #
     threshold, num_to_choose, decoding: bool, mode: str = "both", causal=True
 ):
     """
-        Finds and selects relevant blocks of attention for transformer-based models based on a 
+        Finds and selects relevant blocks of attention for transformer-based models based on a
         threshold or a predefined number of blocks.
 
         Parameters:
@@ -70,7 +73,7 @@ def find_blocks_chunked(
     assert threshold is None or num_to_choose is None
     batch_size, head_num, num_block_q, num_block_k = input_tensor.shape
     input_tensor = input_tensor.to(float)
-    
+
     total_sum = input_tensor.sum(dim=-1, keepdim=True)
     if isinstance(threshold, torch.Tensor):
         threshold = threshold.to(float)
@@ -89,7 +92,7 @@ def find_blocks_chunked(
         .unsqueeze(0)
         .expand(1, head_num, num_block_q, num_block_q)
     )
-    # Note that other_values only contains the values of the current block 
+    # Note that other_values only contains the values of the current block
     # (the sink blocks and diagonal are filled with 0)
     other_values = input_tensor.masked_fill(mask, 0)
 
@@ -139,7 +142,7 @@ def find_blocks_chunked(
 
     assert bool((torch.where(mask,input_tensor,0).sum(dim=-1, keepdim=True) >= required_sum * 0.99).all()), \
         f"mask sum {torch.where(mask,input_tensor,0).sum(dim=-1, keepdim=True)} < required_sum {required_sum}"
-    
+
     try:
         if causal:
             assert (~mask[:, :, :, current_index + num_block_q :]).all()
@@ -208,7 +211,7 @@ def shuffle_zigzag_masks(
 
     _ops.append(send_op)
     _ops.append(recv_op)
-    
+
     response = dist.batch_isend_irecv(_ops)
     for resp in response:
         resp.wait()

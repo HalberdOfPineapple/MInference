@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 """Standalone distributed correctness checks for XAttention raw kernels."""
 from __future__ import annotations
 
@@ -8,7 +11,6 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from minference.ops.utils import set_seed
 from minference.dist_ops.test.raw_test_utils import (
     SEED_BASE,
     check_forward_and_qkv_grads,
@@ -18,13 +20,13 @@ from minference.dist_ops.test.raw_test_utils import (
     slice_local_inputs,
 )
 from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
+from minference.ops.utils import set_seed
 from minference.ops.xattention_fa import xattn_flash_attn_func
 
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-1
 _RTOL = 1e-1
 _WORLD_SIZE = 4
-
 
 
 def _run_worker(
@@ -47,7 +49,9 @@ def _run_worker(
 
     # ----------------- forward / backward on the candidate kernel ------------
     out_local = xattn_zigzag_func(
-        q_local, k_local, v_local,
+        q_local,
+        k_local,
+        v_local,
         layer_idx=0,
         xattn_params=cfg.xattn_params,
         granularity=128,
@@ -70,7 +74,9 @@ def _run_worker(
         single_machine_params = cfg.xattn_params.copy()
         single_machine_params["chunk_size"] = cfg.seq_len // _WORLD_SIZE
         out_ref = xattn_flash_attn_func(
-            q_ref, k_ref, v_ref,
+            q_ref,
+            k_ref,
+            v_ref,
             head_indices=list(range(cfg.num_qo_heads)),
             xattn_params=single_machine_params,
             granularity=128,
@@ -98,7 +104,6 @@ def run_xattention_kernel_test(
     ones: bool = True,
     num_qo_heads: int = 2,
     num_kv_heads: int = 2,
-    
     stride: int = 16,
     threshold: float = 0.9,
 ):
@@ -114,7 +119,7 @@ def run_xattention_kernel_test(
         "causal": True,
         "kdb": 1,
         "keep_sink": False,
-        "keep_recent": False
+        "keep_recent": False,
     }
     cfg = SimpleNamespace(
         batch_size=batch_sz,
@@ -125,7 +130,7 @@ def run_xattention_kernel_test(
         num_kv_heads=num_kv_heads,
         xattn_params=xattn_params,
     )
-  
+
     print("=" * 80)
     print(f"Testing XAttention (w. Zigzag) with configuration:\n{cfg}")
     print("=" * 80)
@@ -135,6 +140,7 @@ def run_xattention_kernel_test(
         nprocs=_WORLD_SIZE,
         join=True,
     )
+
 
 if __name__ == "__main__":
     run_xattention_kernel_test(

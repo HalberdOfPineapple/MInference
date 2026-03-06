@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 """Shared helpers for standalone distributed raw-kernel tests."""
 from __future__ import annotations
 
@@ -35,7 +38,9 @@ def create_full_inputs(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Create full-sequence inputs on rank 0 and broadcast to all ranks."""
     if rank == 0:
-        rand_or_one = torch.randn if not cfg.ones else lambda s, **k: torch.ones(*s, **k)
+        rand_or_one = (
+            torch.randn if not cfg.ones else lambda s, **k: torch.ones(*s, **k)
+        )
         q = rand_or_one(
             (cfg.batch_size, cfg.seq_len, cfg.num_qo_heads, cfg.head_dim),
             dtype=dtype,

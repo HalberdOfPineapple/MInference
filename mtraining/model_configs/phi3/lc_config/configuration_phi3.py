@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 # coding=utf-8
 # Copyright 2024 Microsoft and the HuggingFace Inc. team. All rights reserved.
 #
@@ -18,7 +21,6 @@
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
-
 
 logger = logging.get_logger(__name__)
 
@@ -84,8 +86,8 @@ class Phi3Config(PretrainedConfig):
             The base period of the RoPE embeddings.
         rope_scaling (`dict`, *optional*):
             The scaling strategy for the RoPE embeddings. If `None`, no scaling is applied. If a dictionary, it must
-            contain the following keys: `type`, `short_factor` and `long_factor`. The `type` must be `longrope` and 
-            the `short_factor` and `long_factor` must be lists of numbers with the same length as the hidden size 
+            contain the following keys: `type`, `short_factor` and `long_factor`. The `type` must be `longrope` and
+            the `short_factor` and `long_factor` must be lists of numbers with the same length as the hidden size
             divided by the number of attention heads divided by 2.
         bos_token_id (`int`, *optional*, defaults to 1):
             The id of the "beginning-of-sequence" token.
@@ -202,7 +204,9 @@ class Phi3Config(PretrainedConfig):
         rope_scaling_short_factor = self.rope_scaling.get("short_factor", None)
         rope_scaling_long_factor = self.rope_scaling.get("long_factor", None)
         if rope_scaling_type is None or rope_scaling_type not in ["longrope"]:
-            raise ValueError(f"`rope_scaling`'s type field must be one of ['longrope'], got {rope_scaling_type}")
+            raise ValueError(
+                f"`rope_scaling`'s type field must be one of ['longrope'], got {rope_scaling_type}"
+            )
         if not (
             isinstance(rope_scaling_short_factor, list)
             and all(isinstance(x, (int, float)) for x in rope_scaling_short_factor)
@@ -210,7 +214,10 @@ class Phi3Config(PretrainedConfig):
             raise ValueError(
                 f"`rope_scaling`'s short_factor field must be a list of numbers, got {rope_scaling_short_factor}"
             )
-        if not len(rope_scaling_short_factor) == self.hidden_size // self.num_attention_heads // 2:
+        if (
+            not len(rope_scaling_short_factor)
+            == self.hidden_size // self.num_attention_heads // 2
+        ):
             raise ValueError(
                 f"`rope_scaling`'s short_factor field must have length {self.hidden_size // self.num_attention_heads // 2}, got {len(rope_scaling_short_factor)}"
             )
@@ -221,7 +228,10 @@ class Phi3Config(PretrainedConfig):
             raise ValueError(
                 f"`rope_scaling`'s long_factor field must be a list of numbers, got {rope_scaling_long_factor}"
             )
-        if not len(rope_scaling_long_factor) == self.hidden_size // self.num_attention_heads // 2:
+        if (
+            not len(rope_scaling_long_factor)
+            == self.hidden_size // self.num_attention_heads // 2
+        ):
             raise ValueError(
                 f"`rope_scaling`'s long_factor field must have length {self.hidden_size // self.num_attention_heads // 2}, got {len(rope_scaling_long_factor)}"
             )

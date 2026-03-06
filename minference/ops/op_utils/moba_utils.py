@@ -1,10 +1,14 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
+from dataclasses import dataclass
+from functools import lru_cache
+
 #  Copyright (c) Microsoft Corporation.
 #  Licensed under the MIT License.
 import torch
 import torch.distributed as dist
 
-from functools import lru_cache
-from dataclasses import dataclass
 
 def tensor_4d_to_3d(tensor: torch.Tensor) -> torch.Tensor:
     """Convert a 4D tensor to a 3D tensor by collapsing the first two dimensions."""
@@ -29,7 +33,7 @@ def shuffle_input_all(
 
     rank = dist.get_rank(process_group)
     world_size = dist.get_world_size(process_group)
-    
+
     if not to_send.is_contiguous():
         to_send = to_send.contiguous()
     block_seq_len = to_send.shape[1] // 2
@@ -94,7 +98,7 @@ def shuffle_input_all(
     _ops.append(recv_op)
     _ops.append(recv_gate_mask_op)
     _ops.append(recv_offset_op)
-    
+
     # response = dist.dist.batch_isend_irecv(_ops)
     response = dist.batch_isend_irecv(_ops)
     for resp in response:
@@ -103,7 +107,7 @@ def shuffle_input_all(
     if rank >= world_size // 2: # D: 6 7, -> 1 6
         to_send_f[:, block_seq_len:] = to_send[:, :block_seq_len]
         to_send_f[:, :block_seq_len, ...] = res
-        
+
         to_send_gate_mask[..., block_seq_len:] = gate_mask[..., :block_seq_len]
         to_send_gate_mask[..., :block_seq_len] = res_gate_mask
 
@@ -124,7 +128,7 @@ def shuffle_input_all(
     # GPU C: [3 4]
     # GPU D: [1 6]
     return (
-        to_send_f if orig_ndim != 3 else to_send_f.squeeze(0), 
+        to_send_f if orig_ndim != 3 else to_send_f.squeeze(0),
         seq_offsets,
         to_send_gate_mask,
     )
@@ -139,7 +143,7 @@ def shuffle_input_only(
 
     rank = dist.get_rank(process_group)
     world_size = dist.get_world_size(process_group)
-    
+
     if not to_send.is_contiguous():
         to_send = to_send.contiguous()
     block_seq_len = to_send.shape[1] // 2
@@ -150,10 +154,10 @@ def shuffle_input_only(
 
     to_send_slice = to_send[:, block_seq_len:].contiguous()
     res = torch.zeros_like(to_send_slice)
-    
+
     _ops = []
     offset = ((dist.get_rank() // world_size) * world_size)
-    
+
     src_rank = (world_size - rank - 1) % world_size + offset
     send_op = dist.P2POp(
         dist.isend, to_send_slice, src_rank, group=process_group
@@ -163,7 +167,7 @@ def shuffle_input_only(
     recv_op = dist.P2POp(
         dist.irecv, res, src_rank, group=process_group)
     _ops.append(recv_op)
-    
+
     # response = dist.dist.batch_isend_irecv(_ops)
     response = dist.batch_isend_irecv(_ops)
     for resp in response:
@@ -198,7 +202,7 @@ def calc_chunks(cu_seqlen, moba_chunk_size):
     )
     # example: [1, 1 + num of chunks]
     cu_num_chunk[1:] = batch_num_chunk.cumsum(dim=0)
-    
+
     # total chunk ( for all batch )
     # example: 1 + num of chunks
     num_chunk = cu_num_chunk[-1]
@@ -240,7 +244,7 @@ def calc_chunks(cu_seqlen, moba_chunk_size):
     chunk_to_remain = torch.ones(
         (num_chunk, ), dtype=torch.bool, device=cu_seqlen.device
     )
-    chunk_to_remain[chunk_to_remove] = False # example: 
+    chunk_to_remain[chunk_to_remove] = False # example:
     filtered_chunk_indices = chunk_to_remain.nonzero(as_tuple=True)[0]
     num_filtered_chunk = len(filtered_chunk_indices)
 
@@ -275,7 +279,7 @@ def compute_moba_gate(
 
     # ---------------------------------------------------------------------------------------------
     kv = torch.stack((k, v), dim=1) # [ blk_S, 2, H, D ]
-    
+
     world_size = dist.get_world_size()
     kv_list = [torch.zeros_like(kv, dtype=q.dtype, device=q.device) for _ in range(world_size)]
     dist.all_gather(kv_list, kv)
@@ -306,7 +310,7 @@ def compute_moba_gate(
     filtered_kv_indices += cu_chunk[filtered_chunk_indices][:, None]
 
     # select the elements of KV corresponding to all chunks that are not filtered out
-    filtered_kv = kv_gathered.index_select(0, filtered_kv_indices.view(-1)) 
+    filtered_kv = kv_gathered.index_select(0, filtered_kv_indices.view(-1))
 
     """ calc key_gate_weight and gate """
     # key_gate_weight [ F_N_CHUNK, HEAD, HEAD_DIM ]
@@ -346,7 +350,7 @@ def compute_moba_gate(
     _, gate_top_k_idx = torch.topk(gate, k=moba_topk, dim=0, largest=True, sorted=False)
     # apply causal mask
     gate_mask = torch.logical_not(gate.isinf())
-    
+
     # select topk chunks
     gate_idx_mask = torch.zeros(gate_mask.shape, dtype=torch.bool, device=q.device)
     gate_idx_mask = gate_idx_mask.scatter_(dim=0, index=gate_top_k_idx, value=True)
@@ -355,9 +359,9 @@ def compute_moba_gate(
     gate_mask = torch.logical_and(gate_mask, gate_idx_mask).contiguous()
 
     return (
-        # gate_mask does not need to be gathered because 
+        # gate_mask does not need to be gathered because
         # each device only needs the gate_mask corresponding to the current query block
-        gate_mask, 
+        gate_mask,
         cu_chunk,
         filtered_chunk_indices,
         num_filtered_chunk,

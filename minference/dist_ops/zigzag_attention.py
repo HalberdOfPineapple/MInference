@@ -1,24 +1,32 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 #  Copyright (c) Microsoft Corporation.
 #  Licensed under the MIT License.
 
+import copy
+
 # Credits: This logger implementation is inspired by project https://github.com/zhuzilin/ring-flash-attention
 import os
-import copy
+from time import perf_counter
+from typing import Dict, List, Tuple
+
 import torch
 import torch.distributed as dist
-
-from time import perf_counter
-from typing import List, Tuple, Dict
-from flash_attn.flash_attn_interface import _flash_attn_forward, _flash_attn_backward
+from flash_attn.flash_attn_interface import _flash_attn_backward, _flash_attn_forward
 
 from .utils import (
-    RingComm, update_out_and_lse, shuffle_zigzag_input, 
-    recover_zigzag_output, get_default_args
+    RingComm,
+    get_default_args,
+    recover_zigzag_output,
+    shuffle_zigzag_input,
+    update_out_and_lse,
 )
+
 
 def zigzag_ring_flash_attn_forward(
     process_group,
-    q: torch.Tensor, # [B, S, H, D]
+    q: torch.Tensor,  # [B, S, H, D]
     k: torch.Tensor,
     v: torch.Tensor,
     layer_idx: int,
@@ -71,7 +79,6 @@ def zigzag_ring_flash_attn_forward(
             block_out, block_lse, _, _ = outputs
         return block_out, block_lse
 
-    
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
             next_k, next_v = comm.send_recv_kv(k, v)
@@ -89,7 +96,8 @@ def zigzag_ring_flash_attn_forward(
         else:
             block_out, block_lse = forward(q1, k, v, causal=False)
             out, lse = update_out_and_lse(
-                out, lse,
+                out,
+                lse,
                 block_out,
                 block_lse,
                 slice_=(slice(None), slice(block_seq_len, None)),
@@ -98,15 +106,19 @@ def zigzag_ring_flash_attn_forward(
         if step + 1 != comm.world_size:
             comm.wait()
             k, v = next_k, next_v
-            
+
     out = out.to(q.dtype)
     lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out, lse
 
+
 def zigzag_ring_flash_attn_backward(
     process_group,
     dout,
-    q, k, v, out,
+    q,
+    k,
+    v,
+    out,
     layer_idx: int,
     softmax_lse,
     softmax_scale,
@@ -169,7 +181,9 @@ def zigzag_ring_flash_attn_backward(
                     "window_size_right": window_size[1],
                 }
             )
-        params.update({"rng_state": torch.zeros((2, ), dtype=torch.int64, device=q.device)})
+        params.update(
+            {"rng_state": torch.zeros((2,), dtype=torch.int64, device=q.device)}
+        )
 
         _flash_attn_backward(**params)
 
@@ -210,25 +224,33 @@ def zigzag_ring_flash_attn_backward(
             k, v = next_k, next_v
 
         next_dk, next_dv = d_kv_comm.send_recv_kv(
-            dk, dv, dk_comm_buffer, dv_comm_buffer,
+            dk,
+            dv,
+            dk_comm_buffer,
+            dv_comm_buffer,
         )
-        
+
     d_kv_comm.wait()
     return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
-'''
+
+"""
 In nnscaler, sequence are stored in the initial order, e.g., [0 1 2 3 4 5 6 7].
 However, zigzag ring flash attention requires the sequence to be in the order of [0 7 2 5 3 4 1 6].
 As a result:
 - in forward, we need to shuffle q, k, v and recover the out
 - in backward, we need to shuffle dout and recover the dq, dk, dv
-'''
+"""
+
+
 class ZigZagRingFlashAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        q, k, v,
-        layer_idx, 
+        q,
+        k,
+        v,
+        layer_idx,
         dropout_p,
         softmax_scale,
         causal,
@@ -239,7 +261,8 @@ class ZigZagRingFlashAttnFunc(torch.autograd.Function):
         group,
     ):
         assert alibi_slopes is None
-        if softmax_scale is None: softmax_scale = q.shape[-1] ** (-0.5)
+        if softmax_scale is None:
+            softmax_scale = q.shape[-1] ** (-0.5)
 
         # ----------------------------------------------
         # Shuffle
@@ -252,7 +275,9 @@ class ZigZagRingFlashAttnFunc(torch.autograd.Function):
         # Compute
         out, softmax_lse = zigzag_ring_flash_attn_forward(
             group,
-            q, k, v,
+            q,
+            k,
+            v,
             layer_idx,
             softmax_scale=softmax_scale,
             dropout_p=dropout_p,
@@ -261,12 +286,14 @@ class ZigZagRingFlashAttnFunc(torch.autograd.Function):
             alibi_slopes=alibi_slopes,
             deterministic=False,
         )
-        
+
         # ----------------------------------------------
         # Recover outputs
         recovered_out = recover_zigzag_output(out, dim=1, process_group=group)
         if return_softmax:
-            recovered_softmax_lse = recover_zigzag_output(softmax_lse, dim=2, process_group=group)
+            recovered_softmax_lse = recover_zigzag_output(
+                softmax_lse, dim=2, process_group=group
+            )
 
         # ------------------------------
         # Saving tensors
@@ -278,7 +305,7 @@ class ZigZagRingFlashAttnFunc(torch.autograd.Function):
         ctx.alibi_slopes = alibi_slopes
         ctx.deterministic = deterministic
         ctx.group = group
-        ctx.layer_idx = layer_idx 
+        ctx.layer_idx = layer_idx
         ctx.return_softmax = return_softmax
 
         # ----------------------------------------------
@@ -291,22 +318,39 @@ class ZigZagRingFlashAttnFunc(torch.autograd.Function):
     def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse = ctx.saved_tensors
         layer_idx = ctx.layer_idx
-        dropout_p, softmax_scale, causal, window_size, alibi_slopes, deterministic, return_softmax, group = (
-            ctx.dropout_p, ctx.softmax_scale, ctx.causal, ctx.window_size,
-            ctx.alibi_slopes, ctx.deterministic, ctx.return_softmax,
-            ctx.group
+        (
+            dropout_p,
+            softmax_scale,
+            causal,
+            window_size,
+            alibi_slopes,
+            deterministic,
+            return_softmax,
+            group,
+        ) = (
+            ctx.dropout_p,
+            ctx.softmax_scale,
+            ctx.causal,
+            ctx.window_size,
+            ctx.alibi_slopes,
+            ctx.deterministic,
+            ctx.return_softmax,
+            ctx.group,
         )
 
         # ----------------------------------------------
         # Shuffle
-        dout = shuffle_zigzag_input(to_send=dout, dim=1, process_group=group) 
+        dout = shuffle_zigzag_input(to_send=dout, dim=1, process_group=group)
 
         # ----------------------------------------------
         # Compute
         dq, dk, dv = zigzag_ring_flash_attn_backward(
             group,
             dout,
-            q, k, v, out,
+            q,
+            k,
+            v,
+            out,
             layer_idx,
             softmax_lse,
             softmax_scale=softmax_scale,
@@ -316,7 +360,6 @@ class ZigZagRingFlashAttnFunc(torch.autograd.Function):
             alibi_slopes=alibi_slopes,
             deterministic=deterministic,
         )
-        
 
         # ----------------------------------------------
         # Recover
@@ -385,7 +428,7 @@ def zigzag_ring_flash_attn_kvpacked_func(
 
 
 def zigzag_ring_flash_attn_func(
-    q: torch.Tensor, 
+    q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     layer_idx,
@@ -399,7 +442,9 @@ def zigzag_ring_flash_attn_func(
     group=None,
 ):
     return ZigZagRingFlashAttnFunc.apply(
-        q, k, v,
+        q,
+        k,
+        v,
         layer_idx,
         dropout_p,
         softmax_scale,

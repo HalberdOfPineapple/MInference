@@ -1,16 +1,21 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 from __future__ import annotations
 
 import os
-import pytest
 import random
-from typing import Callable
 from types import SimpleNamespace
+from typing import Callable
 
+import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from minference.ops.utils import set_seed
+from minference.dist_ops.minfer_dr_striped import minfer_dr_stripe_func
+from minference.dist_ops.minfer_striped import minfer_stripe_func
+from minference.dist_ops.minfer_zigzag import minfer_zigzag_func
 from minference.dist_ops.test.raw_test_utils import (
     SEED_BASE,
     check_forward_and_qkv_grads,
@@ -19,10 +24,8 @@ from minference.dist_ops.test.raw_test_utils import (
     init_process_group,
     slice_local_inputs,
 )
-from minference.dist_ops.minfer_zigzag import minfer_zigzag_func
-from minference.dist_ops.minfer_striped import minfer_stripe_func
-from minference.dist_ops.minfer_dr_striped import minfer_dr_stripe_func
 from minference.ops.pit_sparse_flash_attention_v3 import minference_flash_attn_func
+from minference.ops.utils import set_seed
 
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-2
@@ -34,6 +37,7 @@ _ATTENTION_IMPLS: dict[str, Callable] = {
     "minfer_stripe": minfer_stripe_func,
     "minfer_dr_stripe": minfer_dr_stripe_func,
 }
+
 
 def _run_worker(
     rank: int,
@@ -91,7 +95,7 @@ def _run_worker(
         )
         torch.autograd.backward(out_ref, dout)
         ref_grads = (q_ref.grad, k_ref.grad, v_ref.grad)
-        
+
         check_forward_and_qkv_grads(
             cfg.seq_len,
             final_out,
@@ -104,16 +108,17 @@ def _run_worker(
         )
     dist.destroy_process_group()
 
+
 # ------------- pytest entry-point --------------------------------------------
 @pytest.mark.skipif(torch.cuda.device_count() < _WORLD_SIZE, reason="Not enough GPUs")
-@pytest.mark.parametrize("seq_len",   [131072, 262144, 524288])
-@pytest.mark.parametrize("batch_sz",  [1])
-@pytest.mark.parametrize("head_dim",  [64, 128])
+@pytest.mark.parametrize("seq_len", [131072, 262144, 524288])
+@pytest.mark.parametrize("batch_sz", [1])
+@pytest.mark.parametrize("head_dim", [64, 128])
 @pytest.mark.parametrize("sparsity", [0.9, 0.95])
 @pytest.mark.parametrize("num_qkv_head_pair", [(4, 1), (4, 4)])
 @pytest.mark.parametrize("use_triton", [True, False])
-@pytest.mark.parametrize("attn_op_name",
-    ["minfer_zigzag", "minfer_stripe", "minfer_dr_stripe"]
+@pytest.mark.parametrize(
+    "attn_op_name", ["minfer_zigzag", "minfer_stripe", "minfer_dr_stripe"]
 )
 def test_sparse_attention_kernels(
     seq_len: int,

@@ -1,6 +1,9 @@
 #!/usr/bin/bash
 
 
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 # conda activate mtrain
 source /opt/conda/etc/profile.d/conda.sh
 conda activate mtrain

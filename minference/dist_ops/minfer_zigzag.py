@@ -1,14 +1,22 @@
-import os
-import torch
-import triton
-import torch.distributed as dist
-from typing import List, Tuple, Dict
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
 
-from .utils import (
-    RingComm, shuffle_zigzag_input, recover_zigzag_output,
-)
+import os
+from typing import Dict, List, Tuple
+
+import torch
+import torch.distributed as dist
+import triton
+
 from minference.ops.op_utils.vertical_slash_utils import build_index, convert_blockmask
-from minference.ops.pit_sparse_flash_attention_v3 import block_bar_attn_fwd, block_attn_bwd, bar_attn_bwd
+from minference.ops.pit_sparse_flash_attention_v3 import (
+    bar_attn_bwd,
+    block_attn_bwd,
+    block_bar_attn_fwd,
+)
+
+from .utils import RingComm, recover_zigzag_output, shuffle_zigzag_input
+
 
 def minfer_zigzag_forward(
     process_group: dist.ProcessGroup,
@@ -27,7 +35,9 @@ def minfer_zigzag_forward(
     ring_index = ring_list.index(comm.rank)
 
     out, lse = None, None
-    block_idx, block_cnt = convert_blockmask(block_mask, block_size_M=granularity, block_size_N=64)
+    block_idx, block_cnt = convert_blockmask(
+        block_mask, block_size_M=granularity, block_size_N=64
+    )
 
     for step in range(comm.world_size):
         if step + 1 != comm.world_size:
@@ -37,8 +47,16 @@ def minfer_zigzag_forward(
 
         # ----------------------------------------------
         out, lse = block_bar_attn_fwd(
-            q, k, v, out, lse, softmax_scale,
-            bar_idx, bar_cnt, block_idx[offset], block_cnt[offset],
+            q,
+            k,
+            v,
+            out,
+            lse,
+            softmax_scale,
+            bar_idx,
+            bar_cnt,
+            block_idx[offset],
+            block_cnt[offset],
             granularity=granularity,
             step=offset,
             causal=block_causal,
@@ -58,7 +76,7 @@ def minfer_zigzag_backward(
     q: torch.Tensor,  # [batch_size, num_tokens, num_qo_heads, head_dim]
     k: torch.Tensor,  # [batch_size, num_tokens, num_kv_heads, head_dim]
     v: torch.Tensor,  # [batch_size, num_tokens, num_kv_heads, head_dim]
-    out: torch.Tensor,  # [batch_size, num_tokens, num_qo_heads, head_dim] 
+    out: torch.Tensor,  # [batch_size, num_tokens, num_qo_heads, head_dim]
     softmax_lse: torch.Tensor,  # [batch_size, num_qo_heads, num_tokens]
     layer_idx: int,
     softmax_scale: float,
@@ -86,8 +104,13 @@ def minfer_zigzag_backward(
         # ----------------------------------------------
         # Block Mask
         step_dq, step_dk, step_dv = block_attn_bwd(
-            dout, q, k, v, out,
-            softmax_lse, softmax_scale,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            softmax_scale,
             block_mask[offset],
             granularity=granularity,
             deterministic=False,
@@ -97,9 +120,18 @@ def minfer_zigzag_backward(
         # ----------------------------------------------
         # Bar Mask
         step_dq, step_dk, step_dv = bar_attn_bwd(
-            dout, q, k, v, out, step_dq, step_dk, step_dv,
-            softmax_lse, softmax_scale,
-            bar_idx, bar_cnt,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            step_dq,
+            step_dk,
+            step_dv,
+            softmax_lse,
+            softmax_scale,
+            bar_idx,
+            bar_cnt,
             granularity=granularity,
             deterministic=False,
             step=offset,
@@ -147,16 +179,22 @@ class MInferZigzagAttnFunc(torch.autograd.Function):
         return_softmax,
         group,
     ):
-        if softmax_scale is None: softmax_scale = q.shape[-1] ** (-0.5)
+        if softmax_scale is None:
+            softmax_scale = q.shape[-1] ** (-0.5)
         batch_size, num_tokens_local, num_qo_heads, head_dim = q.shape
 
         # ------------------------------------------------------------------
         # Index Build
         block_mask, bar_idx, bar_cnt, bar_pos, v_idx, v_cnt = build_index(
-            q, k, v_size, s_size, num_tokens_local, 
+            q,
+            k,
+            v_size,
+            s_size,
+            num_tokens_local,
             stripe_transform=False,
             zigzag_transform=True,
-            granularity=granularity, group=group
+            granularity=granularity,
+            group=group,
         )
 
         # ----------------------------------------------
@@ -168,9 +206,15 @@ class MInferZigzagAttnFunc(torch.autograd.Function):
         # ----------------------------------------------
         # Compute
         out, softmax_lse = minfer_zigzag_forward(
-            group, q, k, v, 
-            layer_idx, softmax_scale,
-            block_mask, bar_idx, bar_cnt,
+            group,
+            q,
+            k,
+            v,
+            layer_idx,
+            softmax_scale,
+            block_mask,
+            bar_idx,
+            bar_cnt,
             granularity=granularity,
         )
 
@@ -178,7 +222,9 @@ class MInferZigzagAttnFunc(torch.autograd.Function):
         # Recover outputs
         recovered_out = recover_zigzag_output(out, dim=1, process_group=group)
         if return_softmax:
-            recovered_softmax_lse = recover_zigzag_output(softmax_lse, dim=2, process_group=group)
+            recovered_softmax_lse = recover_zigzag_output(
+                softmax_lse, dim=2, process_group=group
+            )
 
         # ----------------------------------------------
         # Saving tensors for backward
@@ -194,7 +240,7 @@ class MInferZigzagAttnFunc(torch.autograd.Function):
         return recovered_out
 
     @staticmethod
-    def backward(ctx, dout, *args):        
+    def backward(ctx, dout, *args):
         q, k, v, out, softmax_lse, block_mask, bar_idx, bar_cnt = ctx.saved_tensors
         softmax_scale = ctx.softmax_scale
         granularity = ctx.granularity
@@ -208,9 +254,18 @@ class MInferZigzagAttnFunc(torch.autograd.Function):
         # ----------------------------------------------
         # Compute
         dq, dk, dv = minfer_zigzag_backward(
-            group, dout, q, k, v, out, softmax_lse,
-            layer_idx, softmax_scale,
-            block_mask, bar_idx, bar_cnt,
+            group,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            layer_idx,
+            softmax_scale,
+            block_mask,
+            bar_idx,
+            bar_cnt,
             granularity=granularity,
         )
 
@@ -219,7 +274,7 @@ class MInferZigzagAttnFunc(torch.autograd.Function):
         dq = recover_zigzag_output(dq, dim=1, process_group=group)
         dk = recover_zigzag_output(dk, dim=1, process_group=group)
         dv = recover_zigzag_output(dv, dim=1, process_group=group)
-        
+
         return dq, dk, dv, None, None, None, None, None, None, None
 
 
@@ -292,7 +347,7 @@ def minfer_zigzag_kvpacked_func(
     )
 
 
-def minfer_zigzag_func( # the one used for nnscaler training
+def minfer_zigzag_func(  # the one used for nnscaler training
     q: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]
     k: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]
     v: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]

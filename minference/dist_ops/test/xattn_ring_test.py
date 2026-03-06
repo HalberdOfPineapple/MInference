@@ -1,15 +1,17 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 from __future__ import annotations
 
 import os
-import pytest
 import random
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from minference.ops.utils import set_seed
 from minference.dist_ops.test.raw_test_utils import (
     SEED_BASE,
     check_forward_and_qkv_grads,
@@ -19,12 +21,14 @@ from minference.dist_ops.test.raw_test_utils import (
     slice_local_inputs,
 )
 from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
+from minference.ops.utils import set_seed
 from minference.ops.xattention_fa import xattn_flash_attn_func
 
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-1
 _RTOL = 1e-1
 _WORLD_SIZE = 4
+
 
 def _run_worker(
     rank: int,
@@ -46,7 +50,9 @@ def _run_worker(
 
     # ----------------- forward / backward on the candidate kernel ------------
     out_local = xattn_zigzag_func(
-        q_local, k_local, v_local,
+        q_local,
+        k_local,
+        v_local,
         layer_idx=0,
         xattn_params=cfg.xattn_params,
         granularity=128,
@@ -69,7 +75,9 @@ def _run_worker(
         single_machine_params = cfg.xattn_params.copy()
         single_machine_params["chunk_size"] = cfg.seq_len // _WORLD_SIZE
         out_ref = xattn_flash_attn_func(
-            q_ref, k_ref, v_ref,
+            q_ref,
+            k_ref,
+            v_ref,
             head_indices=list(range(cfg.num_qo_heads)),
             xattn_params=single_machine_params,
             granularity=128,
@@ -93,8 +101,8 @@ def _run_worker(
 
 # ------------- pytest entry-point --------------------------------------------
 @pytest.mark.skipif(torch.cuda.device_count() < _WORLD_SIZE, reason="Not enough GPUs")
-@pytest.mark.parametrize("seq_len",   [131072, 262144, 524288])
-@pytest.mark.parametrize("head_dim",  [64, 128])
+@pytest.mark.parametrize("seq_len", [131072, 262144, 524288])
+@pytest.mark.parametrize("head_dim", [64, 128])
 @pytest.mark.parametrize("num_qkv_head_pair", [(4, 1), (4, 4)])
 @pytest.mark.parametrize("stride", [16, 32])
 @pytest.mark.parametrize("threshold", [0.9, 0.95])
@@ -121,7 +129,7 @@ def test_xattention_kernels(
         "causal": True,
         "kdb": 1,
         "keep_sink": False,
-        "keep_recent": False
+        "keep_recent": False,
     }
     cfg = SimpleNamespace(
         batch_size=1,
@@ -132,7 +140,7 @@ def test_xattention_kernels(
         num_kv_heads=num_qkv_head_pair[1],
         xattn_params=xattn_params,
     )
-  
+
     print(f"=" * 80)
     print(f"Testing XAttention (w. Zigzag) with configuration:\n{cfg}")
     print(f"=" * 80)
@@ -142,4 +150,3 @@ def test_xattention_kernels(
         nprocs=_WORLD_SIZE,
         join=True,
     )
-

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 """Standalone distributed correctness checks for Minference raw kernels."""
 from __future__ import annotations
 
@@ -9,7 +12,9 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from minference.ops.utils import set_seed
+from minference.dist_ops.minfer_dr_striped import minfer_dr_stripe_func
+from minference.dist_ops.minfer_striped import minfer_stripe_func
+from minference.dist_ops.minfer_zigzag import minfer_zigzag_func
 from minference.dist_ops.test.raw_test_utils import (
     SEED_BASE,
     check_forward_and_qkv_grads,
@@ -18,10 +23,8 @@ from minference.dist_ops.test.raw_test_utils import (
     init_process_group,
     slice_local_inputs,
 )
-from minference.dist_ops.minfer_zigzag import minfer_zigzag_func
-from minference.dist_ops.minfer_striped import minfer_stripe_func
-from minference.dist_ops.minfer_dr_striped import minfer_dr_stripe_func
 from minference.ops.pit_sparse_flash_attention_v3 import minference_flash_attn_func
+from minference.ops.utils import set_seed
 
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-2
@@ -83,7 +86,10 @@ def _run_worker(
         k_ref = k.detach().clone().requires_grad_()
         v_ref = v.detach().clone().requires_grad_()
 
-        print(f"Rank {rank} | Running reference forward with q_ref.shape={q_ref.shape}, k_ref.shape={k_ref.shape}, v_ref.shape={v_ref.shape}", flush=True)
+        print(
+            f"Rank {rank} | Running reference forward with q_ref.shape={q_ref.shape}, k_ref.shape={k_ref.shape}, v_ref.shape={v_ref.shape}",
+            flush=True,
+        )
         out_ref = minference_flash_attn_func(
             q_ref,
             k_ref,
@@ -144,6 +150,7 @@ def run_minfer_kernel_test(
         nprocs=_WORLD_SIZE,
         join=True,
     )
+
 
 if __name__ == "__main__":
     run_minfer_kernel_test(

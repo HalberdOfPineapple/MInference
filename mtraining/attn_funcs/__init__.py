@@ -1,6 +1,13 @@
-from typing import Dict, Callable
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
 
-from .dense_func import fa_attn_forward, stripe_ring_attention_forward, zigzag_ring_attention_forward
+from typing import Callable, Dict
+
+from .dense_func import (
+    fa_attn_forward,
+    stripe_ring_attention_forward,
+    zigzag_ring_attention_forward,
+)
 from .minfer_func import minfer_attention_forward
 from .moba_func import moba_attention_forward
 from .xattn_func import xattn_attention_forward
@@ -15,15 +22,16 @@ class AttnType:
     MOBA: str = "moba"
     XATTN: str = "xattn"
 
+
 ATTN_TO_FUNC = {
     AttnType.DENSE: fa_attn_forward,
     AttnType.ZIGZAG_RING: zigzag_ring_attention_forward,
     AttnType.STRIPE_RING: stripe_ring_attention_forward,
-
     AttnType.MINFER: minfer_attention_forward,
     AttnType.MOBA: moba_attention_forward,
     AttnType.XATTN: xattn_attention_forward,
 }
+
 
 def overwrite_attn_implementation(
     attn_dict: Dict[str, Callable],

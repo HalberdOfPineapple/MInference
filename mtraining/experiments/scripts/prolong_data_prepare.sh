@@ -1,5 +1,8 @@
 #!/usr/bin/bash
 
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 export HF_TRUST_REMOTE_CODE=1
 export HF_HOME=/scratch/hf_cache/huggingface
 export HF_TOKEN_PATH="/scratch/.hf_access_token"

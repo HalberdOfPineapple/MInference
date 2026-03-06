@@ -1,5 +1,8 @@
 #!/usr/bin/bash
 
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 # conda activate mtrain
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i

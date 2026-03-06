@@ -1,4 +1,7 @@
 #!/usr/bin/bash
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 set -e
 
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)" # path/to/MInference/mtraining
@@ -9,7 +12,7 @@ sudo $PIP install -U pip setuptools wheel
 sudo $PIP install ninja cmake pybind11 packaging psutil pytest
 sudo $PIP install -r "${BASE_DIR}/requirements.txt"
 
-sudo $PIP install git+https://github.com/microsoft/nnscaler.git@2368540417bc3b77b7e714d3f1a0de8a51bb66e8 
+sudo $PIP install git+https://github.com/microsoft/nnscaler.git@2368540417bc3b77b7e714d3f1a0de8a51bb66e8
 sudo $PIP install "rotary-emb @ git+https://github.com/Dao-AILab/flash-attention.git@9356a1c0389660d7e231ff3163c1ac17d9e3824a#subdirectory=csrc/rotary" --no-build-isolation
 sudo $PIP install "block_sparse_attn @ git+https://github.com/HalberdOfPineapple/flash-attention.git@block-sparse" --no-build-isolation
 sudo $PIP install git+https://github.com/Dao-AILab/flash-attention.git@v2.7.4.post1 --no-build-isolation
