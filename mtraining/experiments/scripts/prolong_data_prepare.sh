@@ -33,7 +33,7 @@ fi
 # Data Processing
 cd $BASE_DIR
 MODEL_ID="Qwen/Qwen2.5-7B"
-PROCESSED_DATA_DIR="/scratch/datasets/processed_datasets_qwen2_7B_4_gpus_by_ranks"
+PROCESSED_DATA_DIR="/scratch/datasets/processed_datasets"
 mkdir -p $PROCESSED_DATA_DIR
 
 torchrun --nproc_per_node=1 \

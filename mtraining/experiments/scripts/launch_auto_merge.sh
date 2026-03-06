@@ -3,7 +3,6 @@
 # Copyright (c) 2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 
-# conda activate mtrain
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i
 export NUM_NODES=4
@@ -36,7 +35,7 @@ mkdir -p $EXPR_DATA_STORE
 cd $EXPR_HOME
 
 export EXPR_DIR="mtrain_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_fp090_512K_tokenized_7B_4GPUS" # Name for the single experiment run
+export EXPR_NAME="qwen_3B_fp090_512K" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
 
 # -----------------------------------------------
@@ -45,7 +44,7 @@ mkdir -p $MERGE_CKPT_DIR
 
 export LOG_PATH="${MERGE_CKPT_DIR}/auto_merge.log"
 echo "log path: $LOG_PATH"
-# python $EXPR_HOME/utils/auto_merge_ckpt.py \
+
 python -m utils.auto_merge_ckpt \
     --gpu_set ${GPU_NAME}_${WORLD_SIZE} \
     --expr_dir $EXPR_DIR \

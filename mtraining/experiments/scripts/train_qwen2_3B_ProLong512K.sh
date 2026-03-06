@@ -1,10 +1,8 @@
 #!/usr/bin/bash
 
-
 # Copyright (c) 2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 
-# conda activate mtrain
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i
 export NUM_NODES=4
@@ -38,11 +36,9 @@ cd $EXPR_HOME
 
 # ------------------------------------------
 export EXPR_DIR="mtrain_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_fp090_512K_split_by_interval" # Name for the single experiment run
+export EXPR_NAME="qwen_3B_fp090_512K" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
-# export DATASET_PATH="/scratch/datasets/processed_datasets/long-context-524288"
-# export DATASET_PATH="/scratch/datasets/processed_datasets_qwen2_7B_4_gpus/long-context-524288"
-export DATASET_PATH="/scratch/datasets/processed_datasets_qwen2_7B_by_interval/long-context-524288"
+export DATASET_PATH="/scratch/datasets/processed_datasets/long-context-524288"
 export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
@@ -54,7 +50,7 @@ export ATTN_TYPE="minfer"
 export TF_LOG_PATH="$EXPR_DATA_STORE/$EXPR_DIR/tf_logs"
 export CKPT_PATH="$EXPR_DATA_STORE/$EXPR_DIR/$EXPR_NAME/checkpoints"
 export COMPILE_PATH="$EXPR_DATA_STORE/compile_config/rank_${NODE_RANK}"
-export PAS_PROFILE_DIR="$EXPR_DATA_STORE/$EXPR_DIR/$EXPR_NAME//pas_profile"
+export PAS_PROFILE_DIR="$EXPR_DATA_STORE/$EXPR_DIR/$EXPR_NAME/pas_profile"
 mkdir -p $TF_LOG_PATH
 mkdir -p $CKPT_PATH
 mkdir -p $COMPILE_PATH
@@ -90,9 +86,6 @@ fi
 
 # -------------------------------------------
 # Logging Path
-if [ "$NODE_RANK" -eq 0 ]; then
-    /blob/utils/kill_nv.sh $NUM_NODES true
-fi
 
 export LOG_PATH="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/rank_${NODE_RANK}"
 mkdir -p $LOG_PATH
@@ -148,7 +141,4 @@ torchrun --nproc_per_node=$GPU_PER_NODE \
                     --mem_constraint $MEM_CONSTRAINT \
                     $FORCE_BROADCAST_ALL_FLAG \
                     $CHECK_RESUME > $LOG_PATH/train_${next}.log 2>&1
-if [ "$NODE_RANK" -eq 0 ]; then
-    /blob/utils/kill_nv.sh $NUM_NODES
-fi
 echo "Log saved to $LOG_PATH/train_${next}.log"
