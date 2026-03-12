@@ -37,10 +37,10 @@ cd $EXPR_HOME
 
 # ------------------------------------------
 export EXPR_DIR="dense_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_dense" # Name for the single experiment run
+export EXPR_NAME="qwen_3B_dense_qkv_mini" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
-export DATASET_PATH="/scratch/datasets/processed_datasets/long-context-524288"
-export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
+export DATASET_PATH="/scratch/data_store/processed_datasets/long-context-524288"
+export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B_mini"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
 export TRAIN_ATTN_CONFIG_PATH="${EXPR_HOME}/train_attn_configs/qwen_flex_090.yaml"
@@ -57,6 +57,29 @@ mkdir -p $CKPT_PATH
 mkdir -p $COMPILE_PATH
 mkdir -p $PAS_PROFILE_DIR
 
+
+# -------------------------------------------
+# Optional QKV Dump Settings
+export ENABLE_QKV_DUMP=1
+export QKV_DUMP_ROOT="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/qkv_dump"
+export QKV_DUMP_MAX_SAMPLES=64
+export QKV_DUMP_RANK=0
+
+if [ "$ENABLE_QKV_DUMP" -eq 1 ]; then
+    export MTRAIN_DUMP_QKV_ENABLED=1
+    export MTRAIN_DUMP_QKV_ROOT="$QKV_DUMP_ROOT"
+    export MTRAIN_DUMP_QKV_MAX_SAMPLES="$QKV_DUMP_MAX_SAMPLES"
+    export MTRAIN_DUMP_QKV_RANK="$QKV_DUMP_RANK"
+    mkdir -p "$QKV_DUMP_ROOT"
+    echo "QKV dump enabled: ${MTRAIN_DUMP_QKV_ROOT} (rank ${MTRAIN_DUMP_QKV_RANK}, max samples ${MTRAIN_DUMP_QKV_MAX_SAMPLES})"
+else
+    unset MTRAIN_DUMP_QKV_ENABLED
+    unset MTRAIN_DUMP_QKV_ROOT
+    unset MTRAIN_DUMP_QKV_MAX_SAMPLES
+    unset MTRAIN_DUMP_QKV_RANK
+fi
+
+
 # -------------------------------------------
 # Training Settings
 export SOLVER="dp"
@@ -72,8 +95,8 @@ export GLOBAL_BATCH_SIZE=64
 export MICRO_BATCH_SIZE=1
 export MEM_CONSTRAINT=40
 
-export NUM_ITER=0
-export NUM_EPOCH=1
+export NUM_ITER=$QKV_DUMP_MAX_SAMPLES
+export NUM_EPOCH=0
 
 export CKPT_SAVE_STEP=1
 export CKPT_SAVE_EPOCH=0
