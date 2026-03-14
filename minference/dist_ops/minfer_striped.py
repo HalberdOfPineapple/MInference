@@ -13,6 +13,7 @@ from minference.dist_ops.utils import (
     RingComm,
     recover_striped_output,
     shuffle_striped_input,
+    compute_sparse_ratio
 )
 from minference.ops.op_utils.vertical_slash_utils import (
     build_index,
@@ -45,7 +46,6 @@ if torch.version.hip is None:
         # Restore original flags for future imports
         sys.setdlopenflags(original_flags)
     # NOTE: Block-Sparse-Attention/csrc/block_sparse_attn/src/flash_blockmask.h: add head_idx to blockmask_ptr
-
 
 # ------------------------------------------------------------------
 # CUDA-based Implementation
@@ -353,6 +353,17 @@ class MInferStripeFunc(torch.autograd.Function):
         block_mask, bar_idx, bar_cnt, bar_pos, v_idx, v_cnt = build_index(
             q, k, v_size, s_size, num_tokens_local, granularity=granularity, group=group
         )
+        if os.getenv("EFFI_EVAL_MODE", "0") == "1":
+            world_size = dist.get_world_size(group)
+            sparse_ratio = compute_sparse_ratio(
+                block_mask,
+                bar_cnt,
+                num_tokens_local,
+                world_size,
+                granularity,
+                group,
+            )
+            print(f"{__name__} | Rank {dist.get_rank(group)} | Layer {layer_idx} | Sparse Ratio: {sparse_ratio}")
 
         # Shuffle
         q = shuffle_striped_input(

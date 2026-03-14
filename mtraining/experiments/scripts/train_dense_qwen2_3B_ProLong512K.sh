@@ -37,10 +37,22 @@ cd $EXPR_HOME
 
 # ------------------------------------------
 export EXPR_DIR="dense_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_dense_qkv_mini" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
+
+export EXPR_NAME="qwen_3B_dense_qkv" # Name for the single experiment run
+export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
+
+# export EXPR_NAME="qwen_3B_dense_qkv_mini" # Name for the single experiment run
+# export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B_mini"
+export INFERENCE_ONLY=0
+if [ "$INFERENCE_ONLY" -eq 1 ]; then
+    export INFERENCE_ONLY_FLAG="--inference_only"
+else
+    export INFERENCE_ONLY_FLAG=""
+fi
+
 export DATASET_PATH="/scratch/data_store/processed_datasets/long-context-524288"
-export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B_mini"
+
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
 export TRAIN_ATTN_CONFIG_PATH="${EXPR_HOME}/train_attn_configs/qwen_flex_090.yaml"
@@ -63,20 +75,19 @@ mkdir -p $PAS_PROFILE_DIR
 export ENABLE_QKV_DUMP=1
 export QKV_DUMP_ROOT="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/qkv_dump"
 export QKV_DUMP_MAX_SAMPLES=64
-export QKV_DUMP_RANK=0
 
 if [ "$ENABLE_QKV_DUMP" -eq 1 ]; then
     export MTRAIN_DUMP_QKV_ENABLED=1
     export MTRAIN_DUMP_QKV_ROOT="$QKV_DUMP_ROOT"
     export MTRAIN_DUMP_QKV_MAX_SAMPLES="$QKV_DUMP_MAX_SAMPLES"
-    export MTRAIN_DUMP_QKV_RANK="$QKV_DUMP_RANK"
+    export MTRAIN_DUMP_QKV_STATE_ROOT="/scratch/.dump_temp/${GPU_SET}/${EXPR_DIR}/${EXPR_NAME}"
+    mkdir -p "$MTRAIN_DUMP_QKV_STATE_ROOT"
     mkdir -p "$QKV_DUMP_ROOT"
-    echo "QKV dump enabled: ${MTRAIN_DUMP_QKV_ROOT} (rank ${MTRAIN_DUMP_QKV_RANK}, max samples ${MTRAIN_DUMP_QKV_MAX_SAMPLES})"
+    echo "QKV dump enabled: ${MTRAIN_DUMP_QKV_ROOT} (max samples ${MTRAIN_DUMP_QKV_MAX_SAMPLES})"
 else
     unset MTRAIN_DUMP_QKV_ENABLED
     unset MTRAIN_DUMP_QKV_ROOT
     unset MTRAIN_DUMP_QKV_MAX_SAMPLES
-    unset MTRAIN_DUMP_QKV_RANK
 fi
 
 
@@ -167,6 +178,7 @@ torchrun --nproc_per_node=$GPU_PER_NODE \
                     --transfer_config_dir $TRANSFER_CONFIG_DIR \
                     --mem_constraint $MEM_CONSTRAINT \
                     $FORCE_BROADCAST_ALL_FLAG \
+                    $INFERENCE_ONLY_FLAG \
                     $CHECK_RESUME > $LOG_PATH/train_${next}.log 2>&1
 if [ "$NODE_RANK" -eq 0 ]; then
     /blob/utils/kill_nv.sh $NUM_NODES

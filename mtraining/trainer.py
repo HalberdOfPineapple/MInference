@@ -57,6 +57,20 @@ def get_iter_batch_idx(rank: int, iter_cnt: int):
     return ITER_BATCH_IDX_DICT.get(rank, {}).get(iter_cnt, 0)
 
 
+
+QKV_DUMPED_RECORDS = set()
+def get_qkv_dumped_records():
+    global QKV_DUMPED_RECORDS
+    return QKV_DUMPED_RECORDS
+
+def add_qkv_dumped_record(sample_idx: int, layer_idx: int):
+    global QKV_DUMPED_RECORDS
+    QKV_DUMPED_RECORDS.add((sample_idx, layer_idx))
+
+def is_qkv_dumped(sample_idx: int, layer_idx: int):
+    global QKV_DUMPED_RECORDS
+    return (sample_idx, layer_idx) in QKV_DUMPED_RECORDS
+
 def custom_train_step(
     model: ParallelModule,
     rank: int,
@@ -109,6 +123,7 @@ def custom_train_step(
         latencies = []
         for idx in range(sample_count):
             ITER_BATCH_IDX_DICT[rank][iter_idx] = idx
+            print(f"{__name__} | Rank {rank} | Iter {iter_idx} | Starting Batch {idx}")
 
             sample_start_time = time.perf_counter()
             with accum_mode(begin=(idx == 0), end=(idx == sample_count - 1)):

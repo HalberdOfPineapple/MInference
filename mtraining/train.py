@@ -341,6 +341,7 @@ def main(args):
         use_zero=True,
         use_end2end=True,
         pas_config=pas_config,
+        inference_only=args.inference_only,
     )
 
     # ---------------------------------
@@ -493,6 +494,10 @@ def print_args(args: argparse.Namespace):
     print(f"Gradient Accumulation Steps (INFERRED):\t{grad_accu_step}")
 
     print("-" * 40)
+    if args.inference_only:
+        print("Inference Only Mode")
+    else:
+        print("Training Mode")
     print(f"Model Config Path:\t{args.model_config_path}")
     print(f"Dataset path:\t{args.dataset_path}")
     print(f"Training Attention Config Path:\t{args.train_attn_config_path}")
@@ -658,6 +663,9 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="path to the active param list",
+    )
+    parser.add_argument(
+        "--inference_only", action="store_true", help="only run inference"
     )
 
     parser.add_argument(

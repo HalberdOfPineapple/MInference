@@ -24,6 +24,64 @@ from .utils import (
 )
 
 
+def _maybe_dump_qkv(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    layer_idx: int,
+):
+    if os.getenv("MTRAIN_DUMP_QKV_ENABLED", "0").lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+
+    dump_root = os.getenv("MTRAIN_DUMP_QKV_ROOT")
+    if not dump_root:
+        raise ValueError(f"{__name__} | dump_root is not set when QKV dumping is enabled")
+
+    rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+
+    from mtraining import trainer as mtraining_trainer
+
+    iter_cnt = mtraining_trainer.get_iter_cnt(rank)
+    if (
+        rank not in mtraining_trainer.ITER_BATCH_IDX_DICT
+        or iter_cnt not in mtraining_trainer.ITER_BATCH_IDX_DICT[rank]
+    ):
+        return
+
+    sample_idx = int(mtraining_trainer.get_iter_batch_idx(rank, iter_cnt))
+    max_samples = int(
+        os.getenv(
+            "MTRAIN_DUMP_QKV_MAX_SAMPLES",
+            os.getenv("MTRAIN_DUMP_QKV_MAX_DUMPS", "0"),
+        )
+    )
+
+    if max_samples > 0 and sample_idx >= max_samples:
+        return
+    if mtraining_trainer.is_qkv_dumped(sample_idx, layer_idx):
+        return
+
+    output_path = os.path.join(
+        dump_root,
+        f"layer_{layer_idx}",
+        f"sample_{sample_idx}",
+        f"qkv_{rank}.pt",
+    )
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    packed_qkv = torch.cat((q.detach(), k.detach(), v.detach()), dim=2).contiguous()
+    torch.save(packed_qkv.cpu(), output_path)
+    mtraining_trainer.add_qkv_dumped_record(sample_idx, layer_idx)
+    print(
+        f"{__name__} | Rank {rank} | Layer {layer_idx} | Saved QKV to {output_path}",
+        flush=True,
+    )
+
+
 def zigzag_ring_flash_attn_forward(
     process_group,
     q: torch.Tensor,  # [B, S, H, D]
@@ -263,6 +321,8 @@ class ZigZagRingFlashAttnFunc(torch.autograd.Function):
         assert alibi_slopes is None
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
+
+        _maybe_dump_qkv(q, k, v, layer_idx)
 
         # ----------------------------------------------
         # Shuffle

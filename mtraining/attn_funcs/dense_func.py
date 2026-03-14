@@ -24,8 +24,6 @@ from nnscaler.runtime.device import DeviceGroup
 
 from minference.dist_ops.striped_attention import stripe_flash_attn_func
 from minference.dist_ops.zigzag_attention import zigzag_ring_flash_attn_func
-from mtraining.utils.qkv_dump import maybe_dump_qkv
-
 from .utils import nnscaler_upad_input
 
 
@@ -130,7 +128,6 @@ def wrap_zigzag_attn_func(
         # to the behavior of the original flash_attn_func.
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
-        maybe_dump_qkv(layer_idx, q, k, v, process_group=None)
         output = flash_attn_func(q, k, v, 0.0, softmax_scale, causal)
         return output
 
@@ -148,7 +145,6 @@ def wrap_zigzag_attn_func(
     assert qdim == kdim == vdim, "dimension must be the same"
 
     local_process_group = DeviceGroup().get_group(process_group)
-    maybe_dump_qkv(layer_idx, q, k, v, process_group=local_process_group)
     output = zigzag_ring_flash_attn_func(
         q,
         k,

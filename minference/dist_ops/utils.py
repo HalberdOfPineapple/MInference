@@ -23,6 +23,35 @@ from torch.distributed.distributed_c10d import P2POp
 PROCESS_GROUPS: Dict[str, dist.ProcessGroup] = {}
 
 
+def compute_sparse_ratio(
+    block_mask: torch.Tensor,  # [world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
+    bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
+
+    num_tokens_local: int,
+    world_size: int,
+    granularity: int,
+
+    process_group: dist.ProcessGroup,
+):
+    batch_size, num_qo_heads = block_mask.shape[1:3]
+    num_tokens_global = world_size * num_tokens_local
+    num_blocks_local = triton.cdiv(num_tokens_local, granularity)
+    num_blocks_global = world_size * num_blocks_local
+
+    num_active_blocks_global = block_mask.sum()
+    dist.all_reduce(num_active_blocks_global, op=dist.ReduceOp.SUM, group=process_group)
+    num_active_block_entries = num_active_blocks_global.item() * granularity * granularity
+    num_active_block_entries -= num_blocks_global * granularity * granularity * batch_size * num_qo_heads / 2.0
+
+    num_active_bars_global = bar_cnt.sum()
+    dist.all_reduce(num_active_bars_global, op=dist.ReduceOp.SUM, group=process_group)
+    num_active_bar_entries = num_active_bars_global.item() * granularity
+
+    num_active_entries = num_active_block_entries + num_active_bar_entries
+    total_entries_global = num_tokens_global * num_tokens_global * batch_size * num_qo_heads / 2.0
+    sparse_ratio = 1 - num_active_entries / total_entries_global
+    return sparse_ratio
+
 @cache
 def _get_default_args(func):
     spec = inspect.getfullargspec(func)
