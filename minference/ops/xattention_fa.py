@@ -117,7 +117,7 @@ def xattn_estimate(
     attn_sums = torch.cat(attn_sum_list, dim=-2)
 
     #  (batch_size, head_num, num_blocks_per_chunk * q_chunk_num, block_num)
-    # i.e. (batch_size, head_num, q_block_num, q_block_num)
+    # i.e. (batch_size, head_num, q_block_num, k_block_num_global)
     simple_masks = torch.cat(simple_mask_list, dim=-2)
 
     if causal:

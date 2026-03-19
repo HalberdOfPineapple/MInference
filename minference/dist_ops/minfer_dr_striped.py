@@ -46,7 +46,7 @@ def minfer_dr_stripe_forward_inner(
     lse: torch.Tensor,  # [batch_size, num_qo_heads, num_tokens]
     layer_idx: int,
     softmax_scale: float,
-    block_mask: torch.Tensor,  # [world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
+    block_mask: torch.Tensor,  # [inner_world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
     bar_idx: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, max_v_size]
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
     v_idx: torch.Tensor,  # [batch_size, num_qo_heads, max_v_size]

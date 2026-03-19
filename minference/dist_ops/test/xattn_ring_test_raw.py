@@ -19,8 +19,9 @@ from minference.dist_ops.test.raw_test_utils import (
     init_process_group,
     slice_local_inputs,
 )
-from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
+from minference.dist_ops.xattn_dr_stripe import xattn_dr_stripe_func
 from minference.dist_ops.xattn_stripe import xattn_stripe_func
+from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
 from minference.ops.utils import set_seed
 from minference.ops.xattention_fa import xattn_flash_attn_func
 
@@ -32,6 +33,7 @@ _WORLD_SIZE = 4
 XATTN_IMPLS = {
     "xattn_zigzag": xattn_zigzag_func,
     "xattn_stripe": xattn_stripe_func,
+    "xattn_dr_stripe": xattn_dr_stripe_func,
 }
 
 
@@ -162,5 +164,6 @@ if __name__ == "__main__":
         num_kv_heads=1,
         stride=16,
         threshold=0.95,
-        xattn_op_name='xattn_stripe',
+        # xattn_op_name='xattn_stripe',
+        xattn_op_name='xattn_dr_stripe',
     )

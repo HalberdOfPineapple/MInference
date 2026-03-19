@@ -605,8 +605,8 @@ def shuffle_block_mask_striped(
 
     # ---------------------------------------
     # Shuffle Key chunks
-    block_mask = block_mask.reshape((batch_size, num_qo_heads, num_blocks_per_rank, -1, world_size))
-    block_mask = block_mask.swapaxes(-2, -1)
+    block_mask = block_mask.reshape((batch_size, num_qo_heads, num_blocks_per_rank, -1, world_size * 1))
+    block_mask = block_mask.swapaxes(-2, -1) # local All2All
     block_mask = block_mask.reshape((batch_size, num_qo_heads, num_blocks_per_rank, -1)).contiguous()
     block_mask_slices = block_mask.split(num_blocks_per_rank, dim=-1)  # world_size x [batch_size, num_qo_heads, num_blocks_per_rank, num_blocks_per_rank]
 
