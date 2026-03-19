@@ -5,7 +5,7 @@ import math
 from typing import Any, Dict, List, Tuple
 
 import torch
-
+import torch.distributed as dist
 from minference.ops.op_utils.xattn_utils import (
     LN2,
     find_blocks_chunked,
@@ -13,8 +13,6 @@ from minference.ops.op_utils.xattn_utils import (
     softmax_fuse_block_sum,
 )
 from minference.ops.pit_sparse_flash_attention_v3 import block_attn_bwd, block_attn_fwd
-
-
 def xattn_estimate(
     query_states: torch.Tensor, # (batch_size, num_q_head, q_len, head_dim)
     key_states: torch.Tensor, # (batch_size, num_kv_head, k_len, head_dim)
@@ -30,14 +28,25 @@ def xattn_estimate(
     kdb: int = 1,
     keep_sink=False,
     keep_recent=False,
+    ring_attn:bool=False,
+    group: dist.group = None,
+    layer_idx: int = -1,
 ) -> torch.Tensor:
     batch_size, num_kv_head, k_len, head_dim = key_states.shape
     batch_size, num_q_head, q_len, head_dim = query_states.shape
+    if ring_attn:
+        world_size = dist.get_world_size(group)
+
+        k_gather_list = [torch.empty_like(key_states) for _ in range(world_size)]   
+        dist.all_gather(k_gather_list, key_states.contiguous(), group=group)
+        key_states = torch.cat(k_gather_list, dim=2)
+        k_len = key_states.shape[2]
+
     if num_q_head > num_kv_head:
         key_states = torch.repeat_interleave(key_states.contiguous(), num_q_head // num_kv_head, dim=1)
 
-    assert q_len % chunk_size == 0
-    assert k_len % chunk_size == 0
+    assert q_len % chunk_size == 0, f"q_len={q_len}, chunk_size={chunk_size} must be divisible"
+    assert k_len % chunk_size == 0, f"k_len={k_len}, chunk_size={chunk_size} must be divisible"
 
     q_chunk_num = q_len // chunk_size
     q_block_num = q_len // block_size
@@ -46,29 +55,22 @@ def xattn_estimate(
     attn_sum_list = []
     simple_mask_list = []
 
-    if use_triton and (
-        "100" not in torch.cuda.get_device_properties(torch.cuda.current_device()).name
-    ):
-        use_triton = False
-        print(
-            "setting use triton to false. Triton kernel not surpported on this device"
-        )
-
     num_strides_in_k = k_len // stride
-
     num_strides_per_chunk = chunk_size // stride
     num_strides_per_block = block_size // stride
     num_blocks_per_chunk = num_strides_per_chunk // num_strides_per_block
+    global_chunk_idx_offset = 0 if not ring_attn else (q_len * dist.get_rank(group)) // chunk_size
 
     for chunk_idx in range(q_chunk_num):
         if kdb != 1:
             raise ValueError("use_triton and kdb cannot be used together")
+        global_chunk_idx = global_chunk_idx_offset + chunk_idx
 
         q_chunk_start = chunk_idx * num_strides_per_chunk * stride
         q_chunk_end =  (chunk_idx + 1) * num_strides_per_chunk * stride
 
-        q_chunk_start_stride = chunk_idx * num_strides_per_chunk
-        q_chunk_end_stride = (chunk_idx + 1) * num_strides_per_chunk
+        q_chunk_start_stride = global_chunk_idx * num_strides_per_chunk
+        q_chunk_end_stride = (global_chunk_idx + 1) * num_strides_per_chunk
 
         # attn_weights_slice: (batch_size, num_heads, chunk_size // stride, kv_len // stride)
         # (i.e. the attention sum of each SxS stride block)
@@ -78,12 +80,13 @@ def xattn_estimate(
             query_states[:, :, q_chunk_start : q_chunk_end, :,],
             key_states,
             stride,
-            q_chunk_start_stride,
-            q_chunk_end_stride,
+            q_chunk_start_stride, q_chunk_end_stride,
             is_causal=causal,
         )
 
-        # (batch_size, num_heads, q_block_num, k_block_num),
+        # attn_sum: (batch_size, num_heads, q_block_num, k_block_num),
+        # softmax over the (kv_len // stride) dimension (doing online-softmax with segment size = min(4096, num_strides_per_block))
+        # finally the block sum is done within each (num_strides_per_block, num_strides_per_block) block => output with sahpe (num_blocks, num_blocks)
         attn_sum = softmax_fuse_block_sum(
             attn_weights_slice, # (batch_size, num_heads, chunk_size // stride, kv_len // stride)
             num_strides_per_block,
@@ -93,12 +96,12 @@ def xattn_estimate(
             1 / LN2 / math.sqrt(head_dim) / stride / norm,
             is_causal=causal,
         )
-
-
-        # (batch_size, head_num, num_blocks_per_chunk, block_num)
+        
+        
+        # (batch_size, head_num, num_blocks_q, num_blocks_k)
         simple_mask = find_blocks_chunked(
             attn_sum,
-            chunk_idx * num_blocks_per_chunk,
+            global_chunk_idx * num_blocks_per_chunk,
             threshold,
             None,
             decoding=False,
@@ -118,21 +121,23 @@ def xattn_estimate(
     simple_masks = torch.cat(simple_mask_list, dim=-2)
 
     if causal:
-        simple_masks[:, :, -q_block_num:, -q_block_num:] = torch.where(
+        mask_block_start = global_chunk_idx_offset * chunk_size // block_size
+        mask_block_end = mask_block_start + q_block_num
+        simple_masks[:, :, :, mask_block_start:mask_block_end] = torch.where(
             torch.tril(
                 torch.ones(
                     q_block_num, q_block_num, dtype=bool, device=key_states.device
                 ),
                 diagonal=0,
             ),
-            simple_masks[:, :, -q_block_num:, -q_block_num:],
+            simple_masks[:, :, :, mask_block_start:mask_block_end],
             False,
         )
-        # print(f"{__name__} | simple_masks[:, :, -q_block_num:, -q_block_num:].shape {simple_masks[:, :, -q_block_num:, -q_block_num:].shape} after torch.where")
-
+        simple_masks[..., mask_block_end:] = False
 
     if keep_sink:
         simple_masks[:, :, 0, :] = True
+
     if keep_recent:
         eye_matrix = torch.eye(q_block_num, device=simple_masks.device, dtype=bool)
         eye_matrix_expanded = (
@@ -144,8 +149,8 @@ def xattn_estimate(
             eye_matrix_expanded, True, simple_masks[:, :, -q_block_num:, -q_block_num:]
         )
 
-    # simple_masks -> (batch_size, head_num, q_block_num, q_block_num)
     return attn_sums, simple_masks
+
 
 class XAttnFunc(torch.autograd.Function):
     @staticmethod

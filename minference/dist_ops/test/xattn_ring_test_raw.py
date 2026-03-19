@@ -20,6 +20,7 @@ from minference.dist_ops.test.raw_test_utils import (
     slice_local_inputs,
 )
 from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
+from minference.dist_ops.xattn_stripe import xattn_stripe_func
 from minference.ops.utils import set_seed
 from minference.ops.xattention_fa import xattn_flash_attn_func
 
@@ -27,6 +28,11 @@ from minference.ops.xattention_fa import xattn_flash_attn_func
 _ATOL = 1e-1
 _RTOL = 1e-1
 _WORLD_SIZE = 4
+
+XATTN_IMPLS = {
+    "xattn_zigzag": xattn_zigzag_func,
+    "xattn_stripe": xattn_stripe_func,
+}
 
 
 def _run_worker(
@@ -46,9 +52,11 @@ def _run_worker(
     q_local, k_local, v_local, dout_local = slice_local_inputs(
         rank, world_size, q, k, v, dout
     )
+    xattn_op_name = cfg.xattn_op_name
 
     # ----------------- forward / backward on the candidate kernel ------------
-    out_local = xattn_zigzag_func(
+    xattn_op = XATTN_IMPLS[xattn_op_name]
+    out_local = xattn_op(
         q_local,
         k_local,
         v_local,
@@ -106,6 +114,7 @@ def run_xattention_kernel_test(
     num_kv_heads: int = 2,
     stride: int = 16,
     threshold: float = 0.9,
+    xattn_op_name: str = 'xattn_stripe',
 ):
     """Compare distributed XAttention-Zigzag outputs with dense reference."""
     port = str(random.randint(12000, 20000))
@@ -128,11 +137,12 @@ def run_xattention_kernel_test(
         ones=ones,
         num_qo_heads=num_qo_heads,
         num_kv_heads=num_kv_heads,
+        xattn_op_name=xattn_op_name,
         xattn_params=xattn_params,
     )
 
     print("=" * 80)
-    print(f"Testing XAttention (w. Zigzag) with configuration:\n{cfg}")
+    print(f"Testing XAttention (w. {xattn_op_name}) with configuration:\n{cfg}")
     print("=" * 80)
     mp.spawn(
         _run_worker,
@@ -152,4 +162,5 @@ if __name__ == "__main__":
         num_kv_heads=1,
         stride=16,
         threshold=0.95,
+        xattn_op_name='xattn_stripe',
     )

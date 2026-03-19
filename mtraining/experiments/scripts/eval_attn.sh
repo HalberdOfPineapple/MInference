@@ -44,16 +44,17 @@ QKV_DUMP_ROOT="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/qkv_dump"
 
 
 # Supported choices: dense, zigzag_ring, stripe_ring, minfer, moba, xattn
-ATTN_TYPE="minfer"
+# ATTN_TYPE="minfer"
 # TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/qwen_mf_zigzag.yaml"
-TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/qwen_mf_stripe.yaml"
+# TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/qwen_mf_stripe.yaml"
 # TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/qwen_mf_dr_stripe.yaml"
 
 
 
 # # Supported choices: dense, zigzag_ring, stripe_ring, minfer, moba, xattn
-# ATTN_TYPE="xattn"
-# TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/xattn_zigzag_s16.yaml"
+ATTN_TYPE="xattn"
+TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/xattn_zigzag_s16.yaml"
+# TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/xattn_stripe_s16.yaml"
 
 NUM_Q_HEADS=16
 NUM_KV_HEADS=2

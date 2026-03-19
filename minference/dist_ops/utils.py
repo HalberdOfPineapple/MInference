@@ -22,7 +22,6 @@ from torch.distributed.distributed_c10d import P2POp
 
 PROCESS_GROUPS: Dict[str, dist.ProcessGroup] = {}
 
-
 def compute_sparse_ratio(
     block_mask: torch.Tensor,  # [world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
@@ -586,6 +585,39 @@ def recover_striped_output(
 
     dist.all_to_all(output_list, input_list, group=process_group)
     return torch.stack(output_list, dim=dim + 1).reshape(shape).contiguous()
+
+
+def shuffle_block_mask_striped(
+    block_mask: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks_local, num_blocks_global]
+    group: dist.ProcessGroup,
+):
+    batch_size, num_qo_heads, num_blocks_per_rank, num_blocks_global = block_mask.shape
+    rank = dist.get_rank(group)
+    world_size = dist.get_world_size(group)
+
+    # ---------------------------------------
+    # Shuffle Query chunks
+    block_mask = shuffle_striped_input(
+        block_mask, 
+        granularity=1, dim=2, 
+        process_group=group
+    ).to(block_mask.device)
+
+    # ---------------------------------------
+    # Shuffle Key chunks
+    block_mask = block_mask.reshape((batch_size, num_qo_heads, num_blocks_per_rank, -1, world_size))
+    block_mask = block_mask.swapaxes(-2, -1)
+    block_mask = block_mask.reshape((batch_size, num_qo_heads, num_blocks_per_rank, -1)).contiguous()
+    block_mask_slices = block_mask.split(num_blocks_per_rank, dim=-1)  # world_size x [batch_size, num_qo_heads, num_blocks_per_rank, num_blocks_per_rank]
+
+    shuffled_block_mask_list = []
+    for i in range(world_size):
+        rank_src = (rank - i + world_size) % world_size
+        shuffled_block_mask_list.append(block_mask_slices[rank_src])
+    
+    block_mask = torch.stack(shuffled_block_mask_list, dim=0).contiguous()
+    return block_mask
+    
 
 
 # --------------------------------------------------------------------
