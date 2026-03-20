@@ -4,7 +4,7 @@
 import copy
 import os
 from functools import partial
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -18,6 +18,7 @@ from torch import Tensor
 
 from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
 from minference.dist_ops.xattn_stripe import xattn_stripe_func
+from minference.dist_ops.xattn_dr_stripe import xattn_dr_stripe_func
 from minference.ops.xattention_fa import xattn_flash_attn_func
 
 
@@ -233,6 +234,52 @@ def wrapped_xattn_stripe_func(
         group=group,
     ).contiguous()
 
+def wrapped_xattn_dr_stripe_func(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,  # [B, N, H, D]
+    layer_idx: int,
+    granularity: int,
+    xattn_params: Dict[str, Any],
+    causal: bool = True,
+    dropout: float = 0.0,
+    scaling: Optional[float] = None,
+    sliding_window: Optional[int] = None,
+    process_group: Optional[dist.ProcessGroup] = None,
+):
+    print(f"{__name__} | signature of wrapped_xattn_dr_stripe_func: {wrapped_xattn_dr_stripe_func.__name__}")
+    if process_group is None or len(process_group) == 1:
+        # there is an additional checker for the `scaling`, which is equivalent
+        # to the behavior of the original flash_attn_func.
+        if scaling is None:
+            scaling = q.shape[-1] ** (-0.5)
+        output = flash_attn_func(q, k, v, 0.0, scaling, causal)
+        return output
+
+    group = DeviceGroup().get_group(process_group)
+
+    xattn_params = copy.copy(xattn_params)
+    xattn_params.pop("chunk_size", None)
+    return xattn_dr_stripe_func(
+        q, k, v,
+        layer_idx,
+        xattn_params,
+        granularity,
+        dropout_p=dropout,
+        softmax_scale=scaling,
+        causal=causal,
+        group=group,
+    ).contiguous()
+
+
+XATTN_IMPLEMENTATIONS: Dict[str, Callable] = {
+    "default": wrapped_xattn_func,
+    "zigzag": wrapped_xattn_zigzag_func,
+    "stripe": wrapped_xattn_stripe_func,
+    "dr_stripe": wrapped_xattn_dr_stripe_func,
+}
+
+
 
 def xattn_attn_anno(query_states, key_states, value_states, *args, **kwargs) -> str:
     if query_states.shape[2] != key_states.shape[2]:
@@ -313,3 +360,4 @@ if __name__ != "__main__":
     register_op(xattn_attn_anno)(wrapped_xattn_func)
     register_op(xattn_ring_anno, emit_fn=emit_xattn_ring)(wrapped_xattn_zigzag_func)
     register_op(xattn_ring_anno, emit_fn=emit_xattn_ring)(wrapped_xattn_stripe_func)
+    register_op(xattn_ring_anno, emit_fn=emit_xattn_ring)(wrapped_xattn_dr_stripe_func)

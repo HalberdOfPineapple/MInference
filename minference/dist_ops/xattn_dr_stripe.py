@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
-
+import os
 import torch
 import torch.distributed as dist
 from typing import Any, Dict, Optional, Tuple
@@ -15,6 +15,7 @@ from minference.dist_ops.utils import (
     shuffle_block_mask_striped,
     shuffle_striped_input,
     update_out_and_lse,
+    compute_sparse_ratio_xattn,
 )
 
 
@@ -302,6 +303,17 @@ class XAttnDRStripeFunc(torch.autograd.Function):
             ring_attn=True,
             **xattn_params,
         )
+        if os.getenv("EFFI_EVAL_MODE", "0") == "1":
+            world_size = dist.get_world_size(group)
+            sparse_ratio = compute_sparse_ratio_xattn(
+                block_mask,
+                q.shape[1],
+                granularity,
+                world_size,
+                group,
+            )
+            print(f"{__name__} | Rank {dist.get_rank(group)} | Layer {layer_idx} | Sparse Ratio: {sparse_ratio}")
+
 
         q = shuffle_striped_input(
             to_send=q, dim=1, granularity=granularity, process_group=group

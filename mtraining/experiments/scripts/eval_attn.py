@@ -32,8 +32,7 @@ from mtraining.attn_funcs.moba_func import (
 )
 from mtraining.attn_funcs.xattn_func import (
     wrapped_xattn_func,
-    wrapped_xattn_zigzag_func,
-    wrapped_xattn_stripe_func,
+    XATTN_IMPLEMENTATIONS,
 )
 
 
@@ -340,22 +339,11 @@ def build_runner(
                 scaling=softmax_scale,
                 sliding_window=None,
             )
-        if implementation == "zigzag":
-            return lambda: wrapped_xattn_zigzag_func(
-                q_bnhd,
-                k_bnhd,
-                v_bnhd,
-                layer_idx,
-                granularity,
-                xattn_params,
-                causal=True,
-                dropout=0.0,
-                scaling=softmax_scale,
-                sliding_window=None,
-                process_group=ring_ranks,
-            )
-        if implementation == "stripe":
-            return lambda: wrapped_xattn_stripe_func(
+
+        if implementation in XATTN_IMPLEMENTATIONS:
+            print(f"{__name__} | Using xattn implementation: {implementation}")
+            xattn_ring_fn = XATTN_IMPLEMENTATIONS[implementation]
+            return lambda: xattn_ring_fn(
                 q_bnhd,
                 k_bnhd,
                 v_bnhd,

@@ -51,6 +51,27 @@ def compute_sparse_ratio(
     sparse_ratio = 1 - num_active_entries / total_entries_global
     return sparse_ratio
 
+def compute_sparse_ratio_xattn(
+    block_mask: torch.Tensor,  # (batch_size, head_num, q_local_block_num, k_global_block_num)
+    num_tokens_local: int,
+    block_size: int,
+    world_size: int,
+    process_group: dist.ProcessGroup,
+):
+    batch_size, head_num = block_mask.shape[:2]
+    num_blocks_global = block_mask.shape[-1]
+
+    num_active_blocks_global = block_mask.sum()
+    dist.all_reduce(num_active_blocks_global, op=dist.ReduceOp.SUM, group=process_group)
+    num_active_blocks_global = num_active_blocks_global.item()
+
+    num_active_entries = num_active_blocks_global * block_size * block_size
+    num_active_entries -= num_blocks_global * block_size * block_size * batch_size * head_num / 2.0
+
+    total_entries = num_blocks_global * num_blocks_global * block_size * block_size * batch_size * head_num / 2.0
+    sparse_ratio = 1 - num_active_entries / total_entries
+    return sparse_ratio
+
 @cache
 def _get_default_args(func):
     spec = inspect.getfullargspec(func)

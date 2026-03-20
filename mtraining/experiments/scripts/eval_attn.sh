@@ -53,8 +53,7 @@ QKV_DUMP_ROOT="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/qkv_dump"
 
 # # Supported choices: dense, zigzag_ring, stripe_ring, minfer, moba, xattn
 ATTN_TYPE="xattn"
-TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/xattn_zigzag_s16.yaml"
-# TRAIN_ATTN_CONFIG_PATH="${MTRAIN_HOME}/train_attn_configs/xattn_stripe_s16.yaml"
+TRAIN_ATTN_CONFIG_NAME="xattn_dr_stripe_s16"
 
 NUM_Q_HEADS=16
 NUM_KV_HEADS=2
@@ -64,14 +63,14 @@ WARMUP_ITERS=20
 BENCH_ITERS=50
 DTYPE="bf16"
 
-LAYER_INDICES="15"          # e.g. "0,1,2"
-SAMPLE_INDICES="1"         # e.g. "0,1,2,3"
+LAYER_INDICES="34"          # e.g. "0,1,2"
+SAMPLE_INDICES="0"         # e.g. "0,1,2,3"
 MAX_PAIRS=0                  # 0 means no cap
 
 declare -A CLI_ARGS=(
     ["qkv_dump_root"]="${QKV_DUMP_ROOT}"
     ["attn_type"]="${ATTN_TYPE}"
-    ["train_attn_config_path"]="${TRAIN_ATTN_CONFIG_PATH}"
+    ["train_attn_config_path"]="${MTRAIN_HOME}/train_attn_configs/${TRAIN_ATTN_CONFIG_NAME}.yaml"
     ["num_q_heads"]="${NUM_Q_HEADS}"
     ["num_kv_heads"]="${NUM_KV_HEADS}"
     ["global_seq_len"]="${GLOBAL_SEQ_LEN}"
@@ -85,7 +84,7 @@ declare -A CLI_ARGS=(
     ["save_csv"]="${RESULT_DIR}/${ATTN_TYPE}_rank${NODE_RANK}.csv"
 )
 
-LOG_FILE="${LOG_DIR}/eval_attn.log"
+LOG_FILE="${LOG_DIR}/eval_attn_${TRAIN_ATTN_CONFIG_NAME}.log"
 echo "Logging directed to ${LOG_FILE}"
 
 CMD=(
