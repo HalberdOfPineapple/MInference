@@ -17,6 +17,7 @@ from minference.dist_ops.utils import (
     update_out_and_lse,
     compute_sparse_ratio_xattn,
 )
+from mtraining.utils.cuda_timer import get_cuda_timer
 
 
 def xattn_dr_stripe_forward_inner(
@@ -291,6 +292,8 @@ class XAttnDRStripeFunc(torch.autograd.Function):
         deterministic,
         group,
     ):
+        timer = get_cuda_timer()
+
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
 
@@ -328,20 +331,21 @@ class XAttnDRStripeFunc(torch.autograd.Function):
         block_mask = shuffle_block_mask_striped(block_mask, group=group).to(q.device)
         block_mask = block_mask.contiguous()
 
-        out, softmax_lse = xattn_dr_stripe_forward_outer(
-            group,
-            outer_ring,
-            inner_ring,
-            q,
-            k,
-            v,
-            block_mask,
-            layer_idx,
-            softmax_scale,
-            granularity=granularity,
-            block_idx=None,
-            block_cnt=None,
-        )
+        with timer.region(f"xattn_dr_stripe_forward"):
+            out, softmax_lse = xattn_dr_stripe_forward_outer(
+                group,
+                outer_ring,
+                inner_ring,
+                q,
+                k,
+                v,
+                block_mask,
+                layer_idx,
+                softmax_scale,
+                granularity=granularity,
+                block_idx=None,
+                block_cnt=None,
+            )
 
         recovered_out = recover_striped_output(
             out, dim=1, granularity=granularity, process_group=group
@@ -365,6 +369,8 @@ class XAttnDRStripeFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout, *args):
+        timer = get_cuda_timer()
+
         q, k, v, out, softmax_lse, block_mask = ctx.saved_tensors
         softmax_scale = ctx.softmax_scale
         granularity = ctx.granularity
@@ -375,23 +381,24 @@ class XAttnDRStripeFunc(torch.autograd.Function):
             to_send=dout, granularity=granularity, dim=1, process_group=group
         )
 
-        dq, dk, dv = xattn_dr_stripe_backward_outer(
-            group,
-            ctx.outer_ring,
-            ctx.inner_ring,
-            dout,
-            q,
-            k,
-            v,
-            out,
-            softmax_lse,
-            layer_idx,
-            softmax_scale,
-            block_mask,
-            granularity,
-            block_idx=None,
-            block_cnt=None,
-        )
+        with timer.region(f"xattn_dr_stripe_backward"):
+            dq, dk, dv = xattn_dr_stripe_backward_outer(
+                group,
+                ctx.outer_ring,
+                ctx.inner_ring,
+                dout,
+                q,
+                k,
+                v,
+                out,
+                softmax_lse,
+                layer_idx,
+                softmax_scale,
+                block_mask,
+                granularity,
+                block_idx=None,
+                block_cnt=None,
+            )
 
         dq = recover_striped_output(
             dq, granularity=granularity, dim=1, process_group=group

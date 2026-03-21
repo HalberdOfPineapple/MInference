@@ -247,7 +247,6 @@ def wrapped_xattn_dr_stripe_func(
     sliding_window: Optional[int] = None,
     process_group: Optional[dist.ProcessGroup] = None,
 ):
-    print(f"{__name__} | signature of wrapped_xattn_dr_stripe_func: {wrapped_xattn_dr_stripe_func.__name__}")
     if process_group is None or len(process_group) == 1:
         # there is an additional checker for the `scaling`, which is equivalent
         # to the behavior of the original flash_attn_func.

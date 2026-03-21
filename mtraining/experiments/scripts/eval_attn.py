@@ -17,6 +17,7 @@ import yaml
 
 from minference.configs.model2path import BASE_DIR as SPARSE_PATTERN_CONFIG_DIR
 from mtraining.attn_funcs import AttnType
+from mtraining.utils.cuda_timer import CudaEventTimer, get_cuda_timer, summarize_ms
 from mtraining.attn_funcs.dense_func import (
     fa_attn_forward,
     wrap_striped_attn_func,
@@ -162,20 +163,7 @@ def infer_num_kv_heads(total_heads: int, num_q_heads: int, user_num_kv_heads: in
     return rem // 2
 
 
-def _p(values: List[float], q: float) -> float:
-    t = torch.tensor(values, dtype=torch.float64)
-    return float(torch.quantile(t, q).item())
-
-
-def summarize_ms(values_ms: List[float]) -> Dict[str, float]:
-    return {
-        "mean_ms": float(sum(values_ms) / len(values_ms)),
-        "min_ms": float(min(values_ms)),
-        "max_ms": float(max(values_ms)),
-        "p50_ms": _p(values_ms, 0.5),
-        "p90_ms": _p(values_ms, 0.9),
-        "p95_ms": _p(values_ms, 0.95),
-    }
+# summarize_ms is imported from mtraining.utils.cuda_timer
 
 
 def build_runner(
@@ -365,22 +353,96 @@ def benchmark_kernel(
     fn: Callable[[], torch.Tensor],
     warmup_iters: int,
     bench_iters: int,
-) -> Dict[str, float]:
+    measure_backward: bool = False,
+    timer: CudaEventTimer | None = None,
+) -> Dict[str, Any]:
+    """Benchmark attention kernel latency.
+
+    All iterations are enqueued on the CUDA stream **without** intermediate
+    CPU-GPU synchronization so that kernel-launch overhead is amortised
+    across the loop.  Paired CUDA events recorded on the stream still give
+    accurate *per-iteration* GPU-side timing.  A single
+    ``torch.cuda.synchronize()`` after the loop ensures every event has
+    completed before we read back elapsed times.
+
+    Parameters
+    ----------
+    fn : callable
+        Forward function returning the attention output tensor.
+    warmup_iters : int
+        Number of untimed warm-up iterations.
+    bench_iters : int
+        Number of timed iterations.
+    measure_backward : bool
+        If ``True``, also time ``output.backward(grad)`` after each forward.
+        Input tensors must have ``requires_grad=True``.
+    timer : CudaEventTimer or None
+        When supplied, the timer is enabled during the bench loop so that
+        fine-grained ``timer.region(...)`` calls inside the operator are
+        recorded.
+    """
+    grad_out: torch.Tensor | None = None
+
+    # ---- warm-up (untimed) -----------------------------------------------
     for _ in range(warmup_iters):
-        _ = fn()
+        out = fn()
+        if measure_backward:
+            if grad_out is None or grad_out.shape != out.shape:
+                grad_out = torch.ones_like(out)
+            out.backward(grad_out, retain_graph=False)
     torch.cuda.synchronize()
 
-    lat_ms: List[float] = []
-    for _ in range(bench_iters):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        _ = fn()
-        end.record()
-        torch.cuda.synchronize()
-        lat_ms.append(float(start.elapsed_time(end)))
+    # ---- timed iterations ------------------------------------------------
+    # Record all event pairs on the stream without synchronising in between.
+    # This lets the GPU pipeline iterations and amortises CPU-side kernel
+    # launch overhead.  Event.elapsed_time() still returns the true GPU-side
+    # duration between each (start, end) pair.
+    if timer is not None:
+        timer.reset()
+        timer.enable()
 
-    return summarize_ms(lat_ms)
+    fwd_events: List[Tuple[torch.cuda.Event, torch.cuda.Event]] = []
+    bwd_events: List[Tuple[torch.cuda.Event, torch.cuda.Event]] = []
+
+    for _ in range(bench_iters):
+        fwd_start = torch.cuda.Event(enable_timing=True)
+        fwd_end = torch.cuda.Event(enable_timing=True)
+
+        fwd_start.record()
+        out = fn()
+        fwd_end.record()
+
+        if measure_backward:
+            bwd_start = torch.cuda.Event(enable_timing=True)
+            bwd_end = torch.cuda.Event(enable_timing=True)
+            if grad_out is None or grad_out.shape != out.shape:
+                grad_out = torch.ones_like(out)
+            bwd_start.record()
+            out.backward(grad_out, retain_graph=False)
+            bwd_end.record()
+            bwd_events.append((bwd_start, bwd_end))
+
+        fwd_events.append((fwd_start, fwd_end))
+
+    # Single sync after the full loop — all events are now complete.
+    torch.cuda.synchronize()
+
+    if timer is not None:
+        timer.disable()
+
+    # ---- collect results -------------------------------------------------
+    fwd_ms = [s.elapsed_time(e) for s, e in fwd_events]
+    result: Dict[str, Any] = {"fwd": summarize_ms(fwd_ms)}
+    if measure_backward:
+        bwd_ms = [s.elapsed_time(e) for s, e in bwd_events]
+        result["bwd"] = summarize_ms(bwd_ms)
+        result["total"] = summarize_ms(
+            [f + b for f, b in zip(fwd_ms, bwd_ms)]
+        )
+    if timer is not None and timer.region_names:
+        result["regions"] = timer.summarize()
+
+    return result
 
 
 def main() -> None:
@@ -411,6 +473,13 @@ def main() -> None:
     parser.add_argument("--bench_iters", type=int, default=100)
     parser.add_argument("--dtype", type=str, default="bf16", choices=DTYPE_MAP.keys())
     parser.add_argument("--timeout_minutes", type=int, default=30)
+    parser.add_argument("--measure_backward", action="store_true",
+                        help="Also measure backward pass latency. "
+                             "Input tensors must support autograd.")
+    parser.add_argument("--enable_region_timer", action="store_true",
+                        help="Enable fine-grained CUDA event region timer. "
+                             "Operators instrumented with get_cuda_timer().region() "
+                             "will have their sub-regions recorded.")
     parser.add_argument("--save_json", type=str, default=None)
     parser.add_argument("--save_csv", type=str, default=None)
     args = parser.parse_args()
@@ -419,6 +488,7 @@ def main() -> None:
     dtype = DTYPE_MAP[args.dtype]
     ring_ranks = list(range(world_size))
     attn_cfg = load_yaml(args.train_attn_config_path)
+    timer = get_cuda_timer() if args.enable_region_timer else None
 
     if rank == 0:
         print("=" * 80)
@@ -428,6 +498,8 @@ def main() -> None:
         print(f"world_size={world_size}")
         print(f"dtype={args.dtype}")
         print(f"warmup_iters={args.warmup_iters}, bench_iters={args.bench_iters}")
+        print(f"measure_backward={args.measure_backward}")
+        print(f"enable_region_timer={args.enable_region_timer}")
         print(f"train_attn_config={attn_cfg}")
         print("=" * 80, flush=True)
 
@@ -470,6 +542,14 @@ def main() -> None:
         k_bhnd = k_bnhd.permute(0, 2, 1, 3).contiguous()
         v_bhnd = v_bnhd.permute(0, 2, 1, 3).contiguous()
 
+        if args.measure_backward:
+            q_bnhd.requires_grad_(True)
+            k_bnhd.requires_grad_(True)
+            v_bnhd.requires_grad_(True)
+            q_bhnd.requires_grad_(True)
+            k_bhnd.requires_grad_(True)
+            v_bhnd.requires_grad_(True)
+
         runner = build_runner(
             args=args,
             layer_idx=layer_idx,
@@ -488,6 +568,8 @@ def main() -> None:
             fn=runner,
             warmup_iters=args.warmup_iters,
             bench_iters=args.bench_iters,
+            measure_backward=args.measure_backward,
+            timer=timer,
         )
         dist.barrier()
 
@@ -499,32 +581,42 @@ def main() -> None:
             "num_q_heads": int(args.num_q_heads),
             "num_kv_heads": int(num_kv_heads),
             "head_dim": int(q_bnhd.shape[-1]),
-            **stats,
+            **stats["fwd"],          # backward compat: flat fwd stats
+            "latency": stats,         # nested breakdown (fwd, bwd, total, regions)
         }
         gathered = [None for _ in range(world_size)]
         dist.all_gather_object(gathered, local_result)
         if rank == 0:
             all_rank_results.extend(gathered)
             by_rank = sorted(gathered, key=lambda x: x["rank"])
-            means = [f"r{x['rank']}={x['mean_ms']:.3f}ms" for x in by_rank]
+            if args.measure_backward:
+                info = [
+                    f"r{x['rank']}: fwd={x['latency']['fwd']['mean_ms']:.3f}ms"
+                    f" bwd={x['latency']['bwd']['mean_ms']:.3f}ms"
+                    for x in by_rank
+                ]
+            else:
+                info = [f"r{x['rank']}={x['mean_ms']:.3f}ms" for x in by_rank]
             print(
-                f"[layer={layer_idx} sample={sample_idx}] " + ", ".join(means),
+                f"[layer={layer_idx} sample={sample_idx}] " + ", ".join(info),
                 flush=True,
             )
 
     if rank == 0:
-        overall_mean_ms = float(
-            sum(x["mean_ms"] for x in all_rank_results) / len(all_rank_results)
-        )
-        overall_p95_ms = _p([x["mean_ms"] for x in all_rank_results], 0.95)
         summary = {
             "attn_type": args.attn_type,
             "world_size": world_size,
             "num_pairs": len(pairs),
             "num_rank_records": len(all_rank_results),
-            "overall_mean_of_rank_mean_ms": overall_mean_ms,
-            "overall_p95_of_rank_mean_ms": overall_p95_ms,
+            "measure_backward": args.measure_backward,
         }
+        for phase in ["fwd"] + (["bwd", "total"] if args.measure_backward else []):
+            phase_means = [
+                x["latency"][phase]["mean_ms"] for x in all_rank_results
+            ]
+            phase_summary = summarize_ms(phase_means)
+            summary[f"{phase}_overall_mean_ms"] = phase_summary["mean_ms"]
+            summary[f"{phase}_overall_p95_ms"] = phase_summary["p95_ms"]
         print("-" * 80)
         print(json.dumps(summary, indent=2))
         print("-" * 80, flush=True)
@@ -544,13 +636,32 @@ def main() -> None:
         if args.save_csv:
             import csv
 
+            def _flatten_dict(
+                d: Dict[str, Any], prefix: str = "",
+            ) -> Dict[str, Any]:
+                flat: Dict[str, Any] = {}
+                for k, v in d.items():
+                    key = f"{prefix}{k}" if prefix else k
+                    if isinstance(v, dict):
+                        flat.update(_flatten_dict(v, f"{key}_"))
+                    else:
+                        flat[key] = v
+                return flat
+
+            flat_results = [_flatten_dict(row) for row in all_rank_results]
+            all_keys: set = set()
+            for flat in flat_results:
+                all_keys.update(flat.keys())
+            fieldnames = sorted(all_keys)
+
             out = Path(args.save_csv)
             out.parent.mkdir(parents=True, exist_ok=True)
-            fieldnames = sorted(all_rank_results[0].keys())
             with open(out, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer = csv.DictWriter(
+                    f, fieldnames=fieldnames, extrasaction="ignore",
+                )
                 writer.writeheader()
-                for row in all_rank_results:
+                for row in flat_results:
                     writer.writerow(row)
             print(f"Saved CSV: {out}", flush=True)
 

@@ -13,7 +13,8 @@ NODE_RANK=${i}
 
 export NUM_NODES=4
 export GPU_PER_NODE=8
-export WORLD_SIZE=32
+# world size = num_nodes * gpu_per_node
+export WORLD_SIZE=$((NUM_NODES * GPU_PER_NODE))
 export MASTER_ADDR="node-0"
 export MASTER_PORT="12345"
 
@@ -62,6 +63,8 @@ GLOBAL_SEQ_LEN=524288
 WARMUP_ITERS=20
 BENCH_ITERS=50
 DTYPE="bf16"
+MEASURE_BACKWARD="true"
+ENABLE_REGION_TIMER="true"
 
 LAYER_INDICES="34"          # e.g. "0,1,2"
 SAMPLE_INDICES="0"         # e.g. "0,1,2,3"
@@ -103,6 +106,13 @@ for key in "${!CLI_ARGS[@]}"; do
         CMD+=("--${key}" "${value}")
     fi
 done
+
+if [ "${MEASURE_BACKWARD}" = "true" ]; then
+    CMD+=("--measure_backward")
+fi
+if [ "${ENABLE_REGION_TIMER}" = "true" ]; then
+    CMD+=("--enable_region_timer")
+fi
 
 # printf 'Command:\n%s\n' "${CMD[*]}"
 "${CMD[@]}" > "${LOG_FILE}" 2>&1
