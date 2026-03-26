@@ -5,6 +5,7 @@ import copy
 import logging
 import os
 import time
+import warnings
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -30,6 +31,7 @@ from tqdm import tqdm
 from mtraining.custom_parallel import parallelize as custom_parallelize
 from mtraining.utils.general import fix_model_state_dict
 from mtraining.utils.paths import EXPR_DATA_SAVE_PATH
+from minference.dist_ops.utils import SparseRatioCollector
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,15 @@ def add_qkv_dumped_record(sample_idx: int, layer_idx: int):
 def is_qkv_dumped(sample_idx: int, layer_idx: int):
     global QKV_DUMPED_RECORDS
     return (sample_idx, layer_idx) in QKV_DUMPED_RECORDS
+
+
+_SPARSE_RATIO_COLLECTOR: Optional[SparseRatioCollector] = None
+def get_sparse_ratio_collector() -> SparseRatioCollector:
+    """Return the global singleton collector, creating it on first call."""
+    global _SPARSE_RATIO_COLLECTOR
+    if _SPARSE_RATIO_COLLECTOR is None:
+        _SPARSE_RATIO_COLLECTOR = SparseRatioCollector()
+    return _SPARSE_RATIO_COLLECTOR
 
 def custom_train_step(
     model: ParallelModule,
@@ -161,6 +172,23 @@ class CustomTrainer(Trainer):
             timeout=timedelta(hours=2),
         )
         self.train_step_func = custom_train_step
+    
+    def _validate_and_save(self, step_stat: _StepStat):
+        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
+            print(f"Rank {self.rank} | {__name__} | Sparse Ratio Collection mode enabled, skip validation and checkpoint saving")
+            return
+
+        if self.dataloader['val'] is None:
+            self._save_checkpoint(step_stat.train_loss)
+            return
+
+        if step_stat.val_loss is None:
+            self._validate(step_stat)  # will update step_stat.val_loss internally
+
+        loss = step_stat.val_loss
+        self._save_checkpoint(loss)
+        if self.train_status.best_loss > loss:
+            self.train_status.best_loss = loss
 
     def _train_epoch(self, epoch):
         VAL_STATUS_NO = 0  # not validated or saved
@@ -398,6 +426,20 @@ class CustomTrainer(Trainer):
                 self._validate(step_stat)
                 has_validated = VAL_STATUS_VAL
 
+        # Save sparse-ratio records if collection was enabled
+        collector = get_sparse_ratio_collector()
+        if collector.enabled and collector._records:
+            train_attn_name = os.getenv("TRAIN_ATTN_NAME", "")
+            save_dir = os.path.join(
+                EXPR_DATA_SAVE_PATH["base_path"],
+                "sparse_ratio",
+                train_attn_name,
+            ) if train_attn_name else os.path.join(
+                EXPR_DATA_SAVE_PATH["base_path"],
+                "sparse_ratio",
+            )
+            collector.save(save_dir, self.rank)
+
     def _setup(self):
         self.train_args.init_env(self)
         compile_only = self.train_args.compile_mode
@@ -627,7 +669,12 @@ class CustomTrainer(Trainer):
                 raise ValueError("lr_scheduler is not set in the current trainer")
             if self.lr_scheduler:
                 self.lr_scheduler.load_state_dict(state_dict["lr_scheduler"])
-        self.train_status = TrainStatus(**state_dict["train_status"])
+            
+        if os.getenv("COLLECT_SPARSE_RATIO", "0") != "1":
+            self.train_status = TrainStatus(**state_dict["train_status"])
+        else:
+            print(f"Rank {self.rank} | {__name__} | Sparse Ratio Collection mode enabled, disable loading training status from checkpoints")
+
         self.rng_states_from_resume = state_dict.get(
             "rng_states"
         )  # resumed in _global_batch_iterator()

@@ -37,7 +37,7 @@ def xattn_dr_stripe_forward_inner(
     block_idx: Optional[torch.Tensor] = None,
     block_cnt: Optional[torch.Tensor] = None,
 ):
-    inner_comm = RingComm(process_group, False, inner_ring)
+    inner_comm = RingComm(process_group, False, inner_ring, double_ring="inner")
     inner_rank = inner_ring.index(inner_comm.rank)
     num_inner_steps = len(inner_ring)
     next_k, next_v = None, None
@@ -85,7 +85,7 @@ def xattn_dr_stripe_forward_outer(
     block_idx: Optional[torch.Tensor] = None,
     block_cnt: Optional[torch.Tensor] = None,
 ):
-    outer_comm = RingComm(process_group, False, outer_ring)
+    outer_comm = RingComm(process_group, False, outer_ring, double_ring="outer")
     outer_rank = outer_ring.index(outer_comm.rank)
     num_outer_steps = len(outer_ring)
     inner_block_masks = block_mask.chunk(num_outer_steps, dim=0)
@@ -143,8 +143,8 @@ def xattn_dr_stripe_backward_inner(
     block_idx: Optional[torch.Tensor] = None,
     block_cnt: Optional[torch.Tensor] = None,
 ):
-    inner_kv_comm = RingComm(process_group, False, inner_ring)
-    inner_d_kv_comm = RingComm(process_group, False, inner_ring)
+    inner_kv_comm = RingComm(process_group, False, inner_ring, double_ring="inner")
+    inner_d_kv_comm = RingComm(process_group, False, inner_ring, double_ring="inner")
     inner_rank = inner_ring.index(inner_kv_comm.rank)
     num_inner_steps = len(inner_ring)
 
@@ -217,8 +217,8 @@ def xattn_dr_stripe_backward_outer(
     block_idx: Optional[torch.Tensor] = None,
     block_cnt: Optional[torch.Tensor] = None,
 ):
-    outer_kv_comm = RingComm(process_group, False, outer_ring)
-    outer_d_kv_comm = RingComm(process_group, False, outer_ring)
+    outer_kv_comm = RingComm(process_group, False, outer_ring, double_ring="outer")
+    outer_d_kv_comm = RingComm(process_group, False, outer_ring, double_ring="outer")
     outer_rank = outer_ring.index(outer_kv_comm.rank)
     num_outer_steps = len(outer_ring)
     inner_block_masks = block_mask.chunk(num_outer_steps, dim=0)
@@ -306,16 +306,17 @@ class XAttnDRStripeFunc(torch.autograd.Function):
             ring_attn=True,
             **xattn_params,
         )
-        if os.getenv("EFFI_EVAL_MODE", "0") == "1":
-            world_size = dist.get_world_size(group)
-            sparse_ratio = compute_sparse_ratio_xattn(
-                block_mask,
-                q.shape[1],
-                granularity,
-                world_size,
-                group,
+        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
+            from mtraining.trainer import get_sparse_ratio_collector
+
+            _world_size = dist.get_world_size(group)
+            get_sparse_ratio_collector().record(
+                layer_idx=layer_idx,
+                compute_fn=lambda: compute_sparse_ratio_xattn(
+                    block_mask, q.shape[1], granularity, _world_size, group,
+                ),
+                group=group,
             )
-            print(f"{__name__} | Rank {dist.get_rank(group)} | Layer {layer_idx} | Sparse Ratio: {sparse_ratio}")
 
 
         q = shuffle_striped_input(

@@ -17,7 +17,7 @@ from minference.ops.pit_sparse_flash_attention_v3 import (
 
 from .utils import (
     RingComm, recover_zigzag_output, shuffle_zigzag_input,
-    compute_sparse_ratio
+    compute_sparse_ratio,
 )
 
 def minfer_zigzag_forward(
@@ -199,17 +199,18 @@ class MInferZigzagAttnFunc(torch.autograd.Function):
             granularity=granularity,
             group=group,
         )
-        if os.getenv("EFFI_EVAL_MODE", "0") == "1":
+        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
+            from mtraining.trainer import get_sparse_ratio_collector
+
             world_size = dist.get_world_size(group)
-            sparse_ratio = compute_sparse_ratio(
-                block_mask,
-                bar_cnt,
-                num_tokens_local,
-                world_size,
-                granularity,
-                group,
+            get_sparse_ratio_collector().record(
+                layer_idx=layer_idx,
+                compute_fn=lambda: compute_sparse_ratio(
+                    block_mask, bar_cnt, num_tokens_local,
+                    world_size, granularity, group,
+                ),
+                group=group,
             )
-            print(f"{__name__} | Rank {dist.get_rank(group)} | Layer {layer_idx} | Sparse Ratio: {sparse_ratio}")
 
 
         # ----------------------------------------------

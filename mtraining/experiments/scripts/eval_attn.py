@@ -35,6 +35,7 @@ from mtraining.attn_funcs.xattn_func import (
     wrapped_xattn_func,
     XATTN_IMPLEMENTATIONS,
 )
+from mtraining.trainer import get_sparse_ratio_collector, SparseRatioCollector
 
 
 DTYPE_MAP = {
@@ -161,6 +162,39 @@ def infer_num_kv_heads(total_heads: int, num_q_heads: int, user_num_kv_heads: in
             f"Cannot infer num_kv_heads from total_heads={total_heads}, num_q_heads={num_q_heads}"
         )
     return rem // 2
+
+
+def env_flag_enabled(name: str) -> bool:
+    raw = os.environ.get(name, "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_output_dir(args: argparse.Namespace) -> Path:
+    for candidate in (args.save_json, args.save_csv):
+        if candidate:
+            return Path(candidate).resolve().parent
+    return Path.cwd()
+
+
+def maybe_create_profiler(
+    enabled: bool,
+) -> torch.profiler.profile | None:
+    if not enabled:
+        return None
+    return torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        schedule=torch.profiler.schedule(
+            wait=1,
+            warmup=0,
+            active=20,  # keep active until manually stopped
+        ),
+        record_shapes=False,
+        profile_memory=False,
+        with_stack=True,
+    )
 
 
 # summarize_ms is imported from mtraining.utils.cuda_timer
@@ -355,6 +389,7 @@ def benchmark_kernel(
     bench_iters: int,
     measure_backward: bool = False,
     timer: CudaEventTimer | None = None,
+    profiler: torch.profiler.profile | None = None,
 ) -> Dict[str, Any]:
     """Benchmark attention kernel latency.
 
@@ -380,8 +415,20 @@ def benchmark_kernel(
         When supplied, the timer is enabled during the bench loop so that
         fine-grained ``timer.region(...)`` calls inside the operator are
         recorded.
+    profiler : torch.profiler.profile or None
+        When supplied, the timed benchmark section is also recorded into a
+        torch profiler trace.
     """
     grad_out: torch.Tensor | None = None
+
+    fwd_events: List[Tuple[torch.cuda.Event, torch.cuda.Event]] = [
+        (torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True))
+        for _ in range(bench_iters)
+    ]
+    bwd_events: List[Tuple[torch.cuda.Event, torch.cuda.Event]] = [
+        (torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True))
+        for _ in range(bench_iters)
+    ]
 
     # ---- warm-up (untimed) -----------------------------------------------
     for _ in range(warmup_iters):
@@ -400,35 +447,29 @@ def benchmark_kernel(
     if timer is not None:
         timer.reset()
         timer.enable()
+    if profiler is not None:
+        profiler.start()
 
-    fwd_events: List[Tuple[torch.cuda.Event, torch.cuda.Event]] = []
-    bwd_events: List[Tuple[torch.cuda.Event, torch.cuda.Event]] = []
-
-    for _ in range(bench_iters):
-        fwd_start = torch.cuda.Event(enable_timing=True)
-        fwd_end = torch.cuda.Event(enable_timing=True)
-
-        fwd_start.record()
+    for i in range(bench_iters):
+        fwd_events[i][0].record()  # fwd_start
         out = fn()
-        fwd_end.record()
+        fwd_events[i][1].record()  # fwd_end
 
         if measure_backward:
-            bwd_start = torch.cuda.Event(enable_timing=True)
-            bwd_end = torch.cuda.Event(enable_timing=True)
             if grad_out is None or grad_out.shape != out.shape:
                 grad_out = torch.ones_like(out)
-            bwd_start.record()
+            bwd_events[i][0].record()  # bwd_start
             out.backward(grad_out, retain_graph=False)
-            bwd_end.record()
-            bwd_events.append((bwd_start, bwd_end))
-
-        fwd_events.append((fwd_start, fwd_end))
-
+            bwd_events[i][1].record()  # bwd_end
+        if profiler is not None:
+            profiler.step()
     # Single sync after the full loop — all events are now complete.
     torch.cuda.synchronize()
 
     if timer is not None:
         timer.disable()
+    if profiler is not None:
+        profiler.stop()
 
     # ---- collect results -------------------------------------------------
     fwd_ms = [s.elapsed_time(e) for s, e in fwd_events]
@@ -489,6 +530,8 @@ def main() -> None:
     ring_ranks = list(range(world_size))
     attn_cfg = load_yaml(args.train_attn_config_path)
     timer = get_cuda_timer() if args.enable_region_timer else None
+    profiler_enabled = env_flag_enabled("EVAL_ATTN_ENABLE_TORCH_PROFILER")
+    output_dir = resolve_output_dir(args)
 
     if rank == 0:
         print("=" * 80)
@@ -500,6 +543,9 @@ def main() -> None:
         print(f"warmup_iters={args.warmup_iters}, bench_iters={args.bench_iters}")
         print(f"measure_backward={args.measure_backward}")
         print(f"enable_region_timer={args.enable_region_timer}")
+        print(f"EVAL_ATTN_ENABLE_TORCH_PROFILER={int(profiler_enabled)}")
+        if profiler_enabled:
+            print(f"profiler_output_dir={output_dir}")
         print(f"train_attn_config={attn_cfg}")
         print("=" * 80, flush=True)
 
@@ -564,13 +610,22 @@ def main() -> None:
         )
 
         dist.barrier()
+        profiler = maybe_create_profiler(profiler_enabled)
         stats = benchmark_kernel(
             fn=runner,
             warmup_iters=args.warmup_iters,
             bench_iters=args.bench_iters,
             measure_backward=args.measure_backward,
             timer=timer,
+            profiler=profiler,
         )
+        if profiler is not None:
+            trace_path = (
+                output_dir
+                / f"torch_trace_layer_{layer_idx}_sample_{sample_idx}_rank_{rank}.json"
+            )
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            profiler.export_chrome_trace(str(trace_path))
         dist.barrier()
 
         local_result = {
@@ -601,6 +656,11 @@ def main() -> None:
                 f"[layer={layer_idx} sample={sample_idx}] " + ", ".join(info),
                 flush=True,
             )
+        
+    if rank == 0:
+        print("=" * 80)
+        print(f"Collected Sparse ratio data:\n{get_sparse_ratio_collector()._records}")
+        print("=" * 80)
 
     if rank == 0:
         summary = {

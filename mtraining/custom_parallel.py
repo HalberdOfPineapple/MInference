@@ -238,7 +238,7 @@ def graph_config_equals(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
         for key in GRAPH_CONFIG_FIELDS:
             if a[key] != b[key]:
                 print(
-                    f"graph_config_equals | {key} not equal: {getattr(a, key)} (old_config) != {getattr(b, key)} (current_config)"
+                    f"graph_config_equals | {key} not equal: {a[key]} (old_config) != {b[key]} (current_config)"
                 )
                 if key != "user_config":
                     res = False

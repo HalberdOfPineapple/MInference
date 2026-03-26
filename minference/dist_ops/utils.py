@@ -22,6 +22,80 @@ from torch.distributed.distributed_c10d import P2POp
 
 PROCESS_GROUPS: Dict[str, dist.ProcessGroup] = {}
 
+
+# ---------------------------------------------------------------------------
+# Sparse-ratio collector
+# Enabled by setting env var COLLECT_SPARSE_RATIO=1 during training.
+# Collects (sample_idx, layer_idx) -> sparse_ratio and saves to JSON as
+# {sample_idx: {layer_idx: sparse_ratio}}.
+class SparseRatioCollector:
+    """Collect per-(sample, layer) sparse ratios during training.
+
+    Enabled when the environment variable ``COLLECT_SPARSE_RATIO`` is ``"1"``.
+    The sample index is obtained from the trainer's iteration bookkeeping
+    (``get_iter_cnt`` / ``get_iter_batch_idx``).
+
+    Typical lifecycle::
+
+        # In attention forward (automatic — see call sites):
+        get_sparse_ratio_collector().record(layer_idx, compute_fn, group)
+
+        # At the end of training:
+        get_sparse_ratio_collector().save(output_dir, rank)
+    """
+
+    def __init__(self):
+        self.enabled: bool = os.getenv("COLLECT_SPARSE_RATIO", "0") == "1"
+        # {(sample_idx, layer_idx): sparse_ratio}
+        self._records: Dict[Tuple[int, int], float] = {}
+        if self.enabled:
+            print(f"{__name__} | SparseRatioCollector enabled")
+        else:
+            print(f"{__name__} | SparseRatioCollector disabled")
+
+    def record(
+        self,
+        layer_idx: int,
+        compute_fn,
+        group,
+    ) -> None:
+        """Compute and store sparse ratio for the current sample & layer.
+
+        Only runs when the collector is enabled.  For a given
+        ``(sample_idx, layer_idx)`` pair the computation is done at most
+        once; repeated calls are O(1) dict lookups.
+        """
+        if not self.enabled:
+            return
+        from mtraining.trainer import get_iter_cnt, get_iter_batch_idx
+        rank = dist.get_rank(group)
+        iter_cnt = get_iter_cnt(rank)
+        sample_idx = get_iter_batch_idx(rank, iter_cnt)
+        key = (sample_idx, layer_idx)
+        if key in self._records:
+            return
+        sparse_ratio = compute_fn()
+        self._records[key] = sparse_ratio
+
+    def save(self, output_dir: str, rank: int) -> None:
+        """Write collected records to ``<output_dir>/sparse_ratio_rank_<rank>.json``."""
+        if not self._records:
+            return
+
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return
+
+        import json
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, f"sparse_ratio_rank_{rank}.json")
+        payload: Dict[int, Dict[int, float]] = {}
+        for (sample_idx, layer_idx), sparse_ratio in sorted(self._records.items()):
+            payload.setdefault(sample_idx, {})[layer_idx] = sparse_ratio
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=2)
+        print(f"Sparse ratio records saved to {path}")
+
+
 def compute_sparse_ratio(
     block_mask: torch.Tensor,  # [world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
@@ -36,13 +110,14 @@ def compute_sparse_ratio(
     num_tokens_global = world_size * num_tokens_local
     num_blocks_local = triton.cdiv(num_tokens_local, granularity)
     num_blocks_global = world_size * num_blocks_local
+    block_area = granularity * granularity
 
     num_active_blocks_global = block_mask.sum()
     dist.all_reduce(num_active_blocks_global, op=dist.ReduceOp.SUM, group=process_group)
-    num_active_block_entries = num_active_blocks_global.item() * granularity * granularity
-    num_active_block_entries -= num_blocks_global * granularity * granularity * batch_size * num_qo_heads / 2.0
+    num_active_block_entries = num_active_blocks_global.item() * block_area
+    num_active_block_entries -= num_blocks_global * block_area * batch_size * num_qo_heads / 2.0
 
-    num_active_bars_global = bar_cnt.sum()
+    num_active_bars_global = bar_cnt[..., -1].sum()
     dist.all_reduce(num_active_bars_global, op=dist.ReduceOp.SUM, group=process_group)
     num_active_bar_entries = num_active_bars_global.item() * granularity
 
@@ -282,6 +357,9 @@ def update_out_and_lse(
 
     return out, lse
 
+PROCESS_GROUPS: Dict[str, dist.ProcessGroup] = {}
+_RING_COMM_CACHE: Dict[tuple, "RingComm"] = {}
+
 
 class RingComm:
     def __init__(
@@ -289,6 +367,7 @@ class RingComm:
         process_group: dist.ProcessGroup,
         zigzag: bool = False,
         ring_list: Optional[list] = None,
+        double_ring: str = "none",
     ):
         self._process_group = process_group
         self._ops: List[P2POp] = []
@@ -317,6 +396,73 @@ class RingComm:
             self.send_rank = (self.rank + 1) % self.world_size
             self.recv_rank = (self.rank - 1) % self.world_size
 
+        global PROCESS_GROUPS
+        self.double_ring_tag = double_ring
+        if double_ring == "inner":
+            if "inner" in PROCESS_GROUPS:
+                self._process_group_inner = PROCESS_GROUPS["inner"]
+            else:
+                nccl_options = dist.ProcessGroupNCCL.Options(is_high_priority_stream=True)
+                self._process_group_inner = dist.new_group(
+                    backend="nccl", pg_options=nccl_options, use_local_synchronization=True
+                )
+                nccl_options.config.max_ctas = 128
+                nccl_options.config.min_ctas = 1
+                PROCESS_GROUPS["inner"] = self._process_group_inner
+            # self._process_group_inner = process_group
+        elif double_ring == "outer":
+            if "outer" in PROCESS_GROUPS:
+                self._process_group_outer = PROCESS_GROUPS["outer"]
+            else:
+                nccl_options = dist.ProcessGroupNCCL.Options(is_high_priority_stream=True)
+                nccl_options.config.max_ctas = 1
+                nccl_options.config.min_ctas = 1
+                self._process_group_outer = dist.new_group(
+                    backend="nccl", pg_options=nccl_options, use_local_synchronization=True
+                )
+                PROCESS_GROUPS["outer"] = self._process_group_outer
+
+
+    def reset(self):
+        """Clear per-round mutable state so a cached instance can be reused."""
+        self._ops = []
+        self._reqs = None
+        return self
+
+    @classmethod
+    def create(
+        cls,
+        process_group: dist.ProcessGroup,
+        zigzag: bool = False,
+        ring_list: Optional[list] = None,
+        double_ring: str = "none",
+        slot: int = 0,
+    ) -> "RingComm":
+        """Return a cached RingComm instance, creating one if needed.
+
+        Use different ``slot`` values when multiple instances with the same
+        config are used concurrently (e.g. kv_comm and d_kv_comm in backward).
+        """
+        key = (
+            id(process_group),
+            zigzag,
+            tuple(ring_list) if ring_list is not None else None,
+            double_ring,
+            slot,
+        )
+        if key not in _RING_COMM_CACHE:
+            _RING_COMM_CACHE[key] = cls(process_group, zigzag, ring_list, double_ring)
+        return _RING_COMM_CACHE[key].reset()
+        
+    @property
+    def process_group(self):
+        if self.double_ring_tag == "inner":
+            return self._process_group_inner
+        elif self.double_ring_tag == "outer":
+            return self._process_group_outer
+        else:
+            return self._process_group
+
     def send_recv(
         self,
         to_send: torch.Tensor,
@@ -333,14 +479,14 @@ class RingComm:
             dist.isend,
             to_send,
             self.send_rank,
-            group=self._process_group,
+            group=self.process_group,
             tag=2 * (step_idx * (self.rank + 1)) + fwd,
         )
         recv_op = dist.P2POp(
             dist.irecv,
             res,
             self.recv_rank,
-            group=self._process_group,
+            group=self.process_group,
             tag=2 * (step_idx * (self.rank + 1)) + fwd,
         )
 

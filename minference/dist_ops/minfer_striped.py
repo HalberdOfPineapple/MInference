@@ -13,7 +13,7 @@ from minference.dist_ops.utils import (
     RingComm,
     recover_striped_output,
     shuffle_striped_input,
-    compute_sparse_ratio
+    compute_sparse_ratio,
 )
 from minference.ops.op_utils.vertical_slash_utils import (
     build_index,
@@ -353,17 +353,18 @@ class MInferStripeFunc(torch.autograd.Function):
         block_mask, bar_idx, bar_cnt, bar_pos, v_idx, v_cnt = build_index(
             q, k, v_size, s_size, num_tokens_local, granularity=granularity, group=group
         )
-        if os.getenv("EFFI_EVAL_MODE", "0") == "1":
+        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
+            from mtraining.trainer import get_sparse_ratio_collector
+            # print(f"Collecting sparse ratio for layer {layer_idx}")
             world_size = dist.get_world_size(group)
-            sparse_ratio = compute_sparse_ratio(
-                block_mask,
-                bar_cnt,
-                num_tokens_local,
-                world_size,
-                granularity,
-                group,
+            get_sparse_ratio_collector().record(
+                layer_idx=layer_idx,
+                compute_fn=lambda: compute_sparse_ratio(
+                    block_mask, bar_cnt, num_tokens_local,
+                    world_size, granularity, group,
+                ),
+                group=group,
             )
-            print(f"{__name__} | Rank {dist.get_rank(group)} | Layer {layer_idx} | Sparse Ratio: {sparse_ratio}")
 
         # Shuffle
         q = shuffle_striped_input(

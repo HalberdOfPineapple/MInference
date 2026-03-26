@@ -29,7 +29,7 @@ from .utils import (
     shuffle_block_mask_zigzag,
     shuffle_zigzag_input,
     update_out_and_lse,
-    compute_sparse_ratio_xattn
+    compute_sparse_ratio_xattn,
 )
 
 
@@ -374,16 +374,17 @@ class XAttnZigzagFunc(torch.autograd.Function):
         _, block_mask = xattn_zigzag_estimate(
             q.transpose(1, 2), k.transpose(1, 2), block_size=granularity, **xattn_params
         )
-        if os.getenv("EFFI_EVAL_MODE", "0") == "1":
+        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
+            from mtraining.trainer import get_sparse_ratio_collector
+
             world_size = dist.get_world_size(group)
-            sparse_ratio = compute_sparse_ratio_xattn(
-                block_mask,
-                q.shape[1],
-                granularity,
-                world_size,
-                group,
+            get_sparse_ratio_collector().record(
+                layer_idx=layer_idx,
+                compute_fn=lambda: compute_sparse_ratio_xattn(
+                    block_mask, q.shape[1], granularity, world_size, group,
+                ),
+                group=group,
             )
-            print(f"{__name__} | Rank {dist.get_rank(group)} | Layer {layer_idx} | Sparse Ratio: {sparse_ratio}")
 
 
 
