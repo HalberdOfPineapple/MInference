@@ -709,6 +709,17 @@ def build_index_local(
     num_blocks = triton.cdiv(num_tokens, granularity)
     block_mask, bar_idx, bar_cnt, _, _ = convert_indices(v_idx, s_idx, world_size, rank, num_blocks, granularity)
     block_mask = block_mask[rank]
+
+    if os.getenv("COLLECT_SPARSE_INDEX", "0") == "1":
+        from minference.dist_ops.index_collector import (
+            compute_sparse_ratio_local,
+            get_index_collector,
+        )
+        collector = get_index_collector()
+        collector.record_mask(block_mask.clone(), bar_cnt.clone())
+        ratio = compute_sparse_ratio_local(block_mask, bar_cnt, num_tokens, granularity)
+        collector.record_sparse_ratio(ratio)
+
     return block_mask, bar_idx, bar_cnt
 
 def build_index(

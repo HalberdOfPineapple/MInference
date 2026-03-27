@@ -3,7 +3,9 @@
 # Copyright (c) 2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 
-# Single-card inference script for collecting sparse attention indices.
+# Single-card inference script for collecting sparse attention data
+# (indices, block masks, bar counts, sparse ratios).
+#
 # Unlike the training-based sparse ratio collection (train_qwen2_3B_sparse_ratio.sh),
 # this runs on a single GPU without distributed training or nnscaler.
 #
@@ -20,14 +22,19 @@ mkdir -p $HF_HOME
 export HF_TRUST_REMOTE_CODE=true
 export HF_DATASETS_TRUST_REMOTE_CODE=true
 
-# Enable sparse index collection
+# -----------------------------------------------
+# Enable sparse index / mask collection
 export COLLECT_SPARSE_INDEX=1
 
 # -----------------------------------------------
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EXPR_HOME="$(cd "${SCRIPT_DIR}/../.." && pwd)"  # .../mtraining
+REPO_ROOT="$(cd "${EXPR_HOME}/.." && pwd)"
 cd "${EXPR_HOME}"
+
+# Ensure both mtraining and minference are importable
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 # -----------------------------------------------
 # Model settings
@@ -47,9 +54,10 @@ echo "Checkpoint tag: ${TARGET_CKPT_TAG}"
 echo "Checkpoint path: ${CKPT_PATH}"
 
 # -----------------------------------------------
-# Dataset settings
+# Dataset & sampling settings
 DATASET_PATH="/scratch/data_store/processed_datasets/long-context-524288"
-NUM_SAMPLES=20
+NUM_SAMPLES="${NUM_SAMPLES:-20}"
+SEED="${SEED:-42}"
 
 # -----------------------------------------------
 # Output settings
@@ -76,8 +84,9 @@ python experiments/scripts/infer_sparse_indices.py \
     --dataset_path "${DATASET_PATH}" \
     --output_dir "${OUTPUT_DIR}" \
     --num_samples ${NUM_SAMPLES} \
+    --seed ${SEED} \
     --granularity 128 \
     --save_interval 5 > ${LOG_FILE} 2>&1
 
-echo "Done. Indices saved to ${OUTPUT_DIR}"
+echo "Done. Data saved to ${OUTPUT_DIR}"
 echo "Log saved to ${LOG_FILE}"

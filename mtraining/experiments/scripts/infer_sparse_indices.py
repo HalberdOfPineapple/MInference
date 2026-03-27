@@ -2,29 +2,33 @@
 # Copyright (c) 2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 
-"""Single-card inference script for collecting sparse attention indices.
+"""Single-card inference script for collecting sparse attention data.
 
 Loads a merged checkpoint, applies MInference sparse attention
 (single-card ``minference_flash_attn_func``), runs forward passes over
-dataset samples, and records the vertical / slash index tensors selected
-by each attention head in every layer.
+a random subset of dataset samples (selected with a fixed seed), and
+records per-layer:
+- Vertical / slash index tensors
+- Block mask and bar count tensors
+- Sparse ratio
 
 Usage::
 
-    COLLECT_SPARSE_INDEX=1 python infer_sparse_indices.py \
-        --model_id Qwen/Qwen2.5-3B \
-        --model_config_path ../../model_configs/qwen2/lc_config_3B \
-        --ckpt_path /path/to/merged_ckpts/0000-0001/pytorch_model.bin \
-        --pattern_config Qwen2.5_3B_flex_0.90 \
-        --dataset_path /path/to/processed_dataset \
-        --output_dir /path/to/output \
-        --num_samples 20
+    COLLECT_SPARSE_INDEX=1 python infer_sparse_indices.py \\
+        --model_id Qwen/Qwen2.5-3B \\
+        --model_config_path ../../model_configs/qwen2/lc_config_3B \\
+        --ckpt_path /path/to/merged_ckpts/0000-0001/pytorch_model.bin \\
+        --pattern_config Qwen2.5_3B_flex_0.90 \\
+        --dataset_path /path/to/processed_dataset \\
+        --output_dir /path/to/output \\
+        --num_samples 20 --seed 42
 """
 
 import argparse
 import json
 import logging
 import os
+import random
 import sys
 
 import torch
@@ -129,26 +133,39 @@ def apply_minference_patching(model, args):
 
 
 def run_inference(model, dataset, args):
-    """Run forward passes and collect sparse attention indices."""
+    """Run forward passes and collect sparse attention data."""
     collector = get_index_collector()
     if not collector.enabled:
         raise RuntimeError(
             "IndexCollector is not enabled. Set COLLECT_SPARSE_INDEX=1 environment variable."
         )
 
-    num_samples = min(args.num_samples, len(dataset))
-    logger.info(f"Running inference on {num_samples} samples (seq_len from dataset)")
+    # Select a random subset of samples with a fixed seed for reproducibility
+    total_dataset_size = len(dataset)
+    num_samples = min(args.num_samples, total_dataset_size)
+    rng = random.Random(args.seed)
+    selected_indices = sorted(rng.sample(range(total_dataset_size), num_samples))
+    logger.info(
+        f"Selected {num_samples}/{total_dataset_size} samples with seed={args.seed}: "
+        f"{selected_indices[:10]}{'...' if num_samples > 10 else ''}"
+    )
+
+    # Save the selected indices for reproducibility
+    os.makedirs(args.output_dir, exist_ok=True)
+    meta = {"seed": args.seed, "num_samples": num_samples, "selected_indices": selected_indices}
+    with open(os.path.join(args.output_dir, "sample_meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
 
     model.eval()
     model.cuda()
 
-    for sample_idx in range(num_samples):
+    for i, dataset_idx in enumerate(selected_indices):
         input_ids = torch.tensor(
-            dataset[sample_idx]["input_ids"], dtype=torch.long
+            dataset[dataset_idx]["input_ids"], dtype=torch.long
         ).unsqueeze(0).cuda()
         seq_len = input_ids.shape[1]
 
-        logger.info(f"Sample {sample_idx}/{num_samples}: seq_len={seq_len}")
+        logger.info(f"[{i+1}/{num_samples}] dataset_idx={dataset_idx}, seq_len={seq_len}")
 
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             model.model(input_ids=input_ids, use_cache=False, return_dict=False)
@@ -156,13 +173,13 @@ def run_inference(model, dataset, args):
         collector.finish_sample()
 
         # Save incrementally to avoid losing data on OOM
-        if (sample_idx + 1) % args.save_interval == 0:
+        if (i + 1) % args.save_interval == 0:
             collector.save(args.output_dir)
-            logger.info(f"Saved indices up to sample {sample_idx}")
+            logger.info(f"Saved data up to sample {i}")
 
     # Final save
     collector.save(args.output_dir)
-    logger.info(f"Done. Indices saved to {args.output_dir}")
+    logger.info(f"Done. Data saved to {args.output_dir}")
 
 
 def main():
@@ -196,6 +213,10 @@ def main():
     parser.add_argument(
         "--num_samples", type=int, default=20,
         help="Number of dataset samples to process",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="Random seed for selecting dataset samples (default: 42)",
     )
     parser.add_argument(
         "--granularity", type=int, default=128,

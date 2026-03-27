@@ -46,8 +46,8 @@ PYTHON_SCRIPT="${SCRIPT_DIR}/analyze_sparse_indices.py"
 # -----------------------------------------------------------
 # Data settings — point to the output of infer_sparse_indices.sh
 # -----------------------------------------------------------
-CKPT_TAG="${CKPT_TAG:-0000-0001}"
-BASE_DIR="/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/sparse_indices"
+CKPT_TAG="${CKPT_TAG:-0000-0000}"
+BASE_DIR="/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_fp090_512K_tokenized_7B_4GPUS/sparse_indices"
 DATA_DIR="${BASE_DIR}/${CKPT_TAG}"
 
 # -----------------------------------------------------------
