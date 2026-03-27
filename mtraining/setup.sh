@@ -7,6 +7,7 @@ set -e
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)" # path/to/MInference/mtraining
 PROJECT_ROOT="$(cd "${BASE_DIR}/.." && pwd)" # path/to/MInference
 PIP="$(which pip)"
+echo "Using pip at: ${PIP}"
 
 sudo $PIP install -U pip setuptools wheel
 sudo $PIP install ninja cmake pybind11 packaging psutil pytest

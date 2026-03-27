@@ -39,7 +39,7 @@ PATTERN_CONFIG="Qwen2.5_3B_flex_0.90"
 # Checkpoint settings
 MERGED_CKPT_BASE="/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_fp090_512K_tokenized_7B_4GPUS/merged_ckpts"
 TARGET_EPOCH_IDX="0000"
-TARGET_ITER_IDX="${1:-0001}"
+TARGET_ITER_IDX="${1:-0000}"
 TARGET_CKPT_TAG="${TARGET_EPOCH_IDX}-${TARGET_ITER_IDX}"
 CKPT_PATH="${MERGED_CKPT_BASE}/${TARGET_CKPT_TAG}/pytorch_model.bin"
 

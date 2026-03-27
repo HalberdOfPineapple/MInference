@@ -70,24 +70,30 @@ def load_model(args):
         config=model_config,
         torch_dtype=torch.bfloat16,
     )
+    if not args.ckpt_path:
+        raise ValueError("Checkpoint path must be provided to load merged weights for index collection.")
+    
+    if '0000-0000' in args.ckpt_path:
+        logger.info(f"Using un-trained model for testing")
+        return model, model_config
+    
+
 
     # Load merged checkpoint weights
-    if args.ckpt_path:
-        logger.info(f"Loading checkpoint from {args.ckpt_path}")
-        state_dict = torch.load(args.ckpt_path, map_location="cpu")
+    logger.info(f"Loading checkpoint from {args.ckpt_path}")
+    state_dict = torch.load(args.ckpt_path, map_location="cpu")
 
-        # Handle nested dict (full checkpoint vs raw weights)
-        if "model" in state_dict and not any("." in k for k in list(state_dict.keys())[:5]):
-            state_dict = state_dict["model"]
+    # Handle nested dict (full checkpoint vs raw weights)
+    if "model" in state_dict and not any("." in k for k in list(state_dict.keys())[:5]):
+        state_dict = state_dict["model"]
 
-        # Strip "model." prefix if present (from merge_checkpoint)
-        first_key = next(iter(state_dict))
-        if first_key.startswith("model."):
-            state_dict = {k[len("model."):]: v for k, v in state_dict.items()}
+    # Strip "model." prefix if present (from merge_checkpoint)
+    first_key = next(iter(state_dict))
+    if first_key.startswith("model."):
+        state_dict = {k[len("model."):]: v for k, v in state_dict.items()}
 
-        model.load_state_dict(state_dict, strict=False)
-        logger.info("Checkpoint loaded successfully")
-
+    model.load_state_dict(state_dict, strict=False)
+    logger.info("Checkpoint loaded successfully")
     return model, model_config
 
 
