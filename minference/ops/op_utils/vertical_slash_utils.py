@@ -702,6 +702,10 @@ def build_index_local(
     else:
         v_idx, s_idx = v_size, s_size
 
+    if os.getenv("COLLECT_SPARSE_INDEX", "0") == "1":
+        from minference.dist_ops.index_collector import get_index_collector
+        get_index_collector().record(v_idx.clone(), s_idx.clone())
+
     num_blocks = triton.cdiv(num_tokens, granularity)
     block_mask, bar_idx, bar_cnt, _, _ = convert_indices(v_idx, s_idx, world_size, rank, num_blocks, granularity)
     block_mask = block_mask[rank]

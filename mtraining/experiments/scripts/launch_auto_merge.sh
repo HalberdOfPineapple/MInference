@@ -36,7 +36,7 @@ mkdir -p $EXPR_DATA_STORE
 cd $EXPR_HOME
 
 export EXPR_DIR="mtrain_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_fp090_512K" # Name for the single experiment run
+export EXPR_NAME="qwen_3B_fp090_512K_split_by_interval" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
 
 # -----------------------------------------------
