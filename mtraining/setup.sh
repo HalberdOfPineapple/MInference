@@ -4,12 +4,17 @@
 
 set -e
 
-BASE_DIR="$(cd "$(dirname "$0")" && pwd)" # path/to/MInference/mtraining
+# BASE_DIR="$(cd "$(dirname "$0")" && pwd)" # path/to/MInference/mtraining
+# PROJECT_ROOT="$(cd "${BASE_DIR}/.." && pwd)" # path/to/MInference
+
+BASE_DIR="/scratch/MInference/mtraining"
 PROJECT_ROOT="$(cd "${BASE_DIR}/.." && pwd)" # path/to/MInference
+
 PIP="$(which pip)"
 echo "Using pip at: ${PIP}"
 
-sudo $PIP install -U pip setuptools wheel
+sudo $PIP install -U pip wheel
+$PIP install "setuptools<81"
 sudo $PIP install ninja cmake pybind11 packaging psutil pytest
 sudo $PIP install -r "${BASE_DIR}/requirements.txt"
 
@@ -34,3 +39,21 @@ sudo $PIP install -e $BASE_DIR
 
 sudo $PIP install triton==3.0.0
 sudo cp -r $PROJECT_ROOT/mtraining/utils/comm_prof/NVIDIA_A100-SXM4-40GB/* $NNSCALER_HOME/resources/profile/mi200/comm/
+
+# Stamp dp_solver .so with cppimport checksum trailer if missing
+# (avoids PermissionError from cppimport trying to rebuild on read-only envs)
+sudo $PIP -c "
+from cppimport.importer import setup_module_data, is_build_needed
+from cppimport.checksum import checksum_save
+import os
+
+fp = os.path.abspath(os.path.join(
+    '/opt/conda/envs/ptca/lib/python3.10/site-packages',
+    'nnscaler', 'autodist', 'dp_solver.cpp'))
+md = setup_module_data('nnscaler.autodist.dp_solver', fp)
+if is_build_needed(md):
+    checksum_save(md)
+    print('dp_solver: checksum trailer stamped')
+else:
+    print('dp_solver: already up to date')
+" 2>&1 || echo "Warning: dp_solver checksum stamping failed"
