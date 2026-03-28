@@ -24,8 +24,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INFER_SCRIPT="${SCRIPT_DIR}/infer_sparse_indices.sh"
 
-START_ITER="${1:-3}"
-END_ITER="${2:-39}"
+START_ITER="${1:-1}"
+END_ITER="${2:-6}"
 STEP="${3:-1}"
 NUM_GPUS="${NUM_GPUS:-${4:-$(nvidia-smi -L 2>/dev/null | wc -l)}}"
 

@@ -7,26 +7,40 @@
 Loads a merged checkpoint, applies MInference sparse attention
 (single-card ``minference_flash_attn_func``), runs forward passes over
 a random subset of dataset samples (selected with a fixed seed), and
-records per-layer:
-- Vertical / slash index tensors
-- Block mask and bar count tensors
-- Sparse ratio
+records per-layer sparse attention artefacts.
+
+Each data category is controlled by a separate environment variable /
+CLI flag so that expensive tensors can be skipped:
+
+- **Indices** (``COLLECT_SPARSE_INDEX=1`` / ``--collect_indices``):
+  Vertical and slash index tensors (v_idx, s_idx).
+- **Block masks** (``COLLECT_BLOCK_MASK=1`` / ``--collect_block_mask``):
+  Block mask and bar count tensors — very large for long contexts.
+- **Sparse ratios** are always collected when any flag is active (tiny).
+
+Output layout::
+
+    <output_dir>/
+        indices/sample_0000.pt   # {layer: {"v_idx": …, "s_idx": …}}
+        masks/sample_0000.pt     # {layer: {"block_mask": …, "bar_cnt": …}}
+        sparse_ratios.json       # {sample: {layer: ratio}}
+        sample_meta.json
 
 Usage::
 
-    COLLECT_SPARSE_INDEX=1 python infer_sparse_indices.py \\
+    python infer_sparse_indices.py \\
         --model_id Qwen/Qwen2.5-3B \\
         --model_config_path ../../model_configs/qwen2/lc_config_3B \\
         --ckpt_path /path/to/merged_ckpts/0000-0001/pytorch_model.bin \\
         --pattern_config Qwen2.5_3B_flex_0.90 \\
         --dataset_path /path/to/processed_dataset \\
         --output_dir /path/to/output \\
-        --num_samples 20 --seed 42
+        --num_samples 20 --seed 42 \\
+        --collect_indices --collect_block_mask
 """
 
 import argparse
 import json
-import logging
 import os
 import random
 import sys
@@ -49,8 +63,8 @@ from mtraining.attn_funcs import AttnType, overwrite_attn_implementation
 from mtraining.attn_funcs.minfer_func import MInferAttnFunc
 from mtraining.model_configs import get_model_attn_funcs, get_model_cls
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+
+
 
 
 def load_model(args):
@@ -68,7 +82,7 @@ def load_model(args):
         )
     model_config._attn_implementation = "flash_attention_2"
 
-    logger.info(f"Creating model {args.model_id} with config from {args.model_config_path or args.model_id}")
+    print(f"Creating model {args.model_id} with config from {args.model_config_path or args.model_id}", flush=True)
     model = model_cls.from_pretrained(
         args.model_id,
         config=model_config,
@@ -78,13 +92,13 @@ def load_model(args):
         raise ValueError("Checkpoint path must be provided to load merged weights for index collection.")
     
     if '0000-0000' in args.ckpt_path:
-        logger.info(f"Using un-trained model for testing")
+        print(f"Using un-trained model for testing", flush=True)
         return model, model_config
     
 
 
     # Load merged checkpoint weights
-    logger.info(f"Loading checkpoint from {args.ckpt_path}")
+    print(f"Loading checkpoint from {args.ckpt_path}", flush=True)
     state_dict = torch.load(args.ckpt_path, map_location="cpu")
 
     # Handle nested dict (full checkpoint vs raw weights)
@@ -118,7 +132,7 @@ def load_model(args):
             else:
                 unmapped.append(fk)
         if unmapped:
-            logger.warning(f"Could not map {len(unmapped)} checkpoint keys: {unmapped[:5]}")
+            print(f"[WARNING] Could not map {len(unmapped)} checkpoint keys: {unmapped[:5]}", flush=True)
         state_dict = new_state_dict
     else:
         # Dotted keys — only strip "model." prefix if the keys don't
@@ -135,11 +149,11 @@ def load_model(args):
             f"First 3 ckpt keys: {list(state_dict.keys())[:3]}, "
             f"First 3 model keys: {list(model_keys)[:3]}"
         )
-    logger.info(f"Checkpoint loaded: {num_loaded}/{len(model_keys)} parameters updated")
+    print(f"Checkpoint loaded: {num_loaded}/{len(model_keys)} parameters updated", flush=True)
     if result.missing_keys:
-        logger.warning(f"Missing keys ({len(result.missing_keys)}): {result.missing_keys[:5]}")
+        print(f"[WARNING] Missing keys ({len(result.missing_keys)}): {result.missing_keys[:5]}", flush=True)
     if result.unexpected_keys:
-        logger.warning(f"Unexpected keys ({len(result.unexpected_keys)}): {result.unexpected_keys[:5]}")
+        print(f"[WARNING] Unexpected keys ({len(result.unexpected_keys)}): {result.unexpected_keys[:5]}", flush=True)
 
     return model, model_config
 
@@ -157,7 +171,7 @@ def apply_minference_patching(model, args):
     )
     if not os.path.exists(pattern_config_path):
         raise FileNotFoundError(f"Pattern config not found: {pattern_config_path}")
-    logger.info(f"Pattern config: {pattern_config_path}")
+    print(f"Pattern config: {pattern_config_path}", flush=True)
 
     # Attach MInferAttnFunc to each attention layer (implementation="default" for single-card)
     Attention = model.model.layers[0].self_attn.__class__
@@ -172,7 +186,7 @@ def apply_minference_patching(model, args):
             )
 
     model.apply(update_module)
-    logger.info(f"Applied MInference patching (implementation=default, granularity={args.granularity})")
+    print(f"Applied MInference patching (implementation=default, granularity={args.granularity})", flush=True)
 
 
 def run_inference(model, dataset, args):
@@ -180,7 +194,8 @@ def run_inference(model, dataset, args):
     collector = get_index_collector()
     if not collector.enabled:
         raise RuntimeError(
-            "IndexCollector is not enabled. Set COLLECT_SPARSE_INDEX=1 environment variable."
+            "IndexCollector is not enabled. Set COLLECT_SPARSE_INDEX=1 and/or "
+            "COLLECT_BLOCK_MASK=1, or use --collect_indices / --collect_block_mask."
         )
 
     # Select a random subset of samples with a fixed seed for reproducibility
@@ -188,9 +203,10 @@ def run_inference(model, dataset, args):
     num_samples = min(args.num_samples, total_dataset_size)
     rng = random.Random(args.seed)
     selected_indices = sorted(rng.sample(range(total_dataset_size), num_samples))
-    logger.info(
+    print(
         f"Selected {num_samples}/{total_dataset_size} samples with seed={args.seed}: "
-        f"{selected_indices[:10]}{'...' if num_samples > 10 else ''}"
+        f"{selected_indices[:10]}{'...' if num_samples > 10 else ''}",
+        flush=True,
     )
 
     # Save the selected indices for reproducibility
@@ -208,7 +224,7 @@ def run_inference(model, dataset, args):
         ).unsqueeze(0).cuda()
         seq_len = input_ids.shape[1]
 
-        logger.info(f"[{i+1}/{num_samples}] dataset_idx={dataset_idx}, seq_len={seq_len}")
+        print(f"[{i+1}/{num_samples}] dataset_idx={dataset_idx}, seq_len={seq_len}", flush=True)
 
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             model.model(input_ids=input_ids, use_cache=False, return_dict=False)
@@ -218,11 +234,11 @@ def run_inference(model, dataset, args):
         # Save incrementally to avoid losing data on OOM
         if (i + 1) % args.save_interval == 0:
             collector.save(args.output_dir)
-            logger.info(f"Saved data up to sample {i}")
+            print(f"Saved data up to sample {i}", flush=True)
 
     # Final save
     collector.save(args.output_dir)
-    logger.info(f"Done. Data saved to {args.output_dir}")
+    print(f"Done. Data saved to {args.output_dir}", flush=True)
 
 
 def main():
@@ -269,15 +285,32 @@ def main():
         "--save_interval", type=int, default=5,
         help="Save indices to disk every N samples",
     )
+    parser.add_argument(
+        "--collect_indices", action="store_true", default=False,
+        help="Collect vertical/slash index tensors (v_idx, s_idx). "
+             "Equivalent to env COLLECT_SPARSE_INDEX=1.",
+    )
+    parser.add_argument(
+        "--collect_block_mask", action="store_true", default=False,
+        help="Collect block_mask and bar_cnt tensors (very large for long contexts). "
+             "Equivalent to env COLLECT_BLOCK_MASK=1.",
+    )
     args = parser.parse_args()
 
-    # Ensure collection is enabled
-    os.environ["COLLECT_SPARSE_INDEX"] = "1"
+    # Set collection env vars from CLI flags.
+    # If neither flag is given, default to collecting indices only
+    # (backward-compatible lightweight default).
+    if not args.collect_indices and not args.collect_block_mask:
+        args.collect_indices = True
+    if args.collect_indices:
+        os.environ["COLLECT_SPARSE_INDEX"] = "1"
+    if args.collect_block_mask:
+        os.environ["COLLECT_BLOCK_MASK"] = "1"
 
     model, model_config = load_model(args)
     apply_minference_patching(model, args)
 
-    logger.info(f"Loading dataset from {args.dataset_path}")
+    print(f"Loading dataset from {args.dataset_path}", flush=True)
     dataset = load_from_disk(args.dataset_path)
 
     run_inference(model, dataset, args)

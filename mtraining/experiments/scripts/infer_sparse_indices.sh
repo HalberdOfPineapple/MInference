@@ -10,8 +10,9 @@
 # this runs on a single GPU without distributed training or nnscaler.
 #
 # Usage:
-#   bash infer_sparse_indices.sh [ITER_IDX]
+#   bash infer_sparse_indices.sh [ITER_IDX | EPOCH-ITER_TAG]
 #   bash infer_sparse_indices.sh 0005        # load checkpoint 0000-0005
+#   bash infer_sparse_indices.sh 0000-0005   # same, explicit epoch-iter tag
 
 set -euo pipefail
 
@@ -23,8 +24,13 @@ export HF_TRUST_REMOTE_CODE=true
 export HF_DATASETS_TRUST_REMOTE_CODE=true
 
 # -----------------------------------------------
-# Enable sparse index / mask collection
-export COLLECT_SPARSE_INDEX=1
+# Enable sparse data collection (each type is independently controllable).
+# Set to 1 to collect; 0 (or unset) to skip.
+#   COLLECT_SPARSE_INDEX — v_idx / s_idx index tensors (moderate size)
+#   COLLECT_BLOCK_MASK   — block_mask / bar_cnt tensors (very large!)
+# Sparse ratios are always recorded when any flag is active.
+export COLLECT_SPARSE_INDEX=${COLLECT_SPARSE_INDEX:-0}
+export COLLECT_BLOCK_MASK=${COLLECT_BLOCK_MASK:-0}
 
 # -----------------------------------------------
 # Paths
@@ -40,13 +46,23 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 # Model settings
 MODEL_ID="Qwen/Qwen2.5-3B"
 MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
-PATTERN_CONFIG="Qwen2.5_3B_flex_0.90"
+# PATTERN_CONFIG="Qwen2.5_3B_flex_0.90"
+PATTERN_CONFIG="Qwen2.5_3B_kv_out_v32_fit_o_best_pattern"
 
 # -----------------------------------------------
 # Checkpoint settings
-MERGED_CKPT_BASE="/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_fp090_512K_tokenized_7B_4GPUS/merged_ckpts"
+MERGED_CKPT_BASE="/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_best_pattern_512K/merged_ckpts"
 TARGET_EPOCH_IDX="0000"
-TARGET_ITER_IDX="${1:-0000}"
+TARGET_ITER_IDX="${1:-0001}"
+
+# Accept either a bare iter index (e.g. "0005") or a full epoch-iter
+# tag (e.g. "0000-0005") so the script works with both
+# run_all_infer_sparse_indices.sh and watch_and_infer.sh.
+if [[ "$TARGET_ITER_IDX" == *-* ]]; then
+    TARGET_EPOCH_IDX="${TARGET_ITER_IDX%%-*}"
+    TARGET_ITER_IDX="${TARGET_ITER_IDX##*-}"
+fi
+
 TARGET_CKPT_TAG="${TARGET_EPOCH_IDX}-${TARGET_ITER_IDX}"
 CKPT_PATH="${MERGED_CKPT_BASE}/${TARGET_CKPT_TAG}/pytorch_model.bin"
 
@@ -73,6 +89,15 @@ mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/infer.log"
 echo "Log file: ${LOG_FILE}"
 
+# Build collection flags for the Python script
+COLLECT_FLAGS=""
+if [ "${COLLECT_SPARSE_INDEX}" = "1" ]; then
+    COLLECT_FLAGS="${COLLECT_FLAGS} --collect_indices"
+fi
+if [ "${COLLECT_BLOCK_MASK}" = "1" ]; then
+    COLLECT_FLAGS="${COLLECT_FLAGS} --collect_block_mask"
+fi
+
 # -----------------------------------------------
 # Run single-card inference
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0} \
@@ -86,7 +111,8 @@ python experiments/scripts/infer_sparse_indices.py \
     --num_samples ${NUM_SAMPLES} \
     --seed ${SEED} \
     --granularity 128 \
-    --save_interval 5 > ${LOG_FILE} 2>&1
+    --save_interval 5 \
+    ${COLLECT_FLAGS} > ${LOG_FILE} 2>&1
 
 echo "Done. Data saved to ${OUTPUT_DIR}"
 echo "Log saved to ${LOG_FILE}"

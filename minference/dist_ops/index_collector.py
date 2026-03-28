@@ -10,21 +10,37 @@ import torch
 class IndexCollector:
     """Collect per-(sample, layer) sparse attention data during inference.
 
-    Enabled by setting the environment variable ``COLLECT_SPARSE_INDEX=1``.
-    Records for every layer in a forward pass:
-    - Vertical and slash index tensors (from ``calc_index_local``)
-    - Block mask and bar count tensors (from ``convert_indices``)
-    - Sparse ratio (derived from the mask tensors)
+    Each data type is controlled by a separate environment variable so that
+    expensive tensors (block masks) can be skipped when not needed:
+
+    - ``COLLECT_SPARSE_INDEX=1`` — record vertical / slash index tensors.
+    - ``COLLECT_BLOCK_MASK=1``   — record block_mask and bar_cnt tensors
+      (these are very large for long-context models).
+
+    Sparse ratios (a single float per layer) are always recorded when the
+    collector is enabled (i.e. any of the above flags is set).
+
+    Collected data is saved into separate subdirectories so that each data
+    type can be managed independently:
+
+    - ``<output_dir>/indices/sample_XXXX.pt``
+    - ``<output_dir>/masks/sample_XXXX.pt``
+    - ``<output_dir>/sparse_ratios.json``
     """
 
     def __init__(self):
-        self.enabled: bool = os.getenv("COLLECT_SPARSE_INDEX", "0") == "1"
-        # layer_idx -> {"v_idx": Tensor, "s_idx": Tensor,
-        #               "block_mask": Tensor, "bar_cnt": Tensor}
-        self._current_sample: Dict[int, Dict[str, torch.Tensor]] = {}
+        self.collect_indices: bool = os.getenv("COLLECT_SPARSE_INDEX", "0") == "1"
+        self.collect_masks: bool = os.getenv("COLLECT_BLOCK_MASK", "0") == "1"
+        self.enabled: bool = self.collect_indices or self.collect_masks
+
+        # Per-layer storage for the *current* sample being processed.
+        self._current_indices: Dict[int, Dict[str, torch.Tensor]] = {}
+        self._current_masks: Dict[int, Dict[str, torch.Tensor]] = {}
         self._layer_counter: int = 0
-        # sample_idx -> {layer_idx -> {...}}
-        self._all_samples: Dict[int, Dict[int, Dict[str, torch.Tensor]]] = {}
+
+        # Accumulated across samples: sample_idx -> {layer_idx -> {...}}
+        self._all_indices: Dict[int, Dict[int, Dict[str, torch.Tensor]]] = {}
+        self._all_masks: Dict[int, Dict[int, Dict[str, torch.Tensor]]] = {}
         self._sample_counter: int = 0
 
         # Sparse ratio records: {(sample_idx, layer_idx): float}
@@ -32,10 +48,22 @@ class IndexCollector:
         self._ratio_layer_counter: int = 0
 
         if self.enabled:
-            print(f"{__name__} | IndexCollector enabled")
+            flags = []
+            if self.collect_indices:
+                flags.append("indices")
+            if self.collect_masks:
+                flags.append("masks")
+            print(
+                f"{__name__} | IndexCollector enabled "
+                f"(collecting: {', '.join(flags)}, sparse_ratios)"
+            )
 
     def record(self, v_idx: torch.Tensor, s_idx: torch.Tensor) -> None:
         """Store vertical and slash indices for the current layer.
+
+        The layer counter is always incremented (when the collector is
+        enabled) so that ``record_mask`` can reference the same layer,
+        but data is only stored when ``collect_indices`` is True.
 
         Args:
             v_idx: Vertical indices, shape ``[batch_size, num_heads, max_v_size]``.
@@ -44,11 +72,11 @@ class IndexCollector:
         if not self.enabled:
             return
         layer = self._layer_counter
-        if layer not in self._current_sample:
-            self._current_sample[layer] = {}
-        # Remove batch dim (batch_size is expected to be 1 during inference)
-        self._current_sample[layer]["v_idx"] = v_idx.squeeze(0).cpu()
-        self._current_sample[layer]["s_idx"] = s_idx.squeeze(0).cpu()
+        if self.collect_indices:
+            self._current_indices[layer] = {
+                "v_idx": v_idx.squeeze(0).cpu(),
+                "s_idx": s_idx.squeeze(0).cpu(),
+            }
         self._layer_counter += 1
 
     def record_mask(
@@ -57,25 +85,27 @@ class IndexCollector:
         """Store block mask and bar count for the current layer.
 
         Called from ``build_index_local`` after ``convert_indices``.
+        Data is only stored when ``collect_masks`` is True.
 
         Args:
             block_mask: ``[batch_size, num_heads, num_blocks, num_blocks]`` (bool).
             bar_cnt: ``[batch_size, num_heads, num_blocks, 2]`` (int32).
         """
-        if not self.enabled:
+        if not self.enabled or not self.collect_masks:
             return
         # The layer counter was already incremented by record(), so use
         # the previous layer index.
         layer = self._layer_counter - 1
-        if layer not in self._current_sample:
-            self._current_sample[layer] = {}
-        self._current_sample[layer]["block_mask"] = block_mask.squeeze(0).cpu()
-        self._current_sample[layer]["bar_cnt"] = bar_cnt.squeeze(0).cpu()
+        self._current_masks[layer] = {
+            "block_mask": block_mask.squeeze(0).cpu(),
+            "bar_cnt": bar_cnt.squeeze(0).cpu(),
+        }
 
     def record_sparse_ratio(self, sparse_ratio: float) -> None:
         """Store the sparse ratio for the current layer.
 
         Called from ``build_index_local`` after the block/bar masks are built.
+        Always recorded when the collector is enabled (ratios are tiny).
         """
         if not self.enabled:
             return
@@ -88,10 +118,21 @@ class IndexCollector:
 
         Stores the accumulated layer data and resets for the next sample.
         """
-        if not self.enabled or not self._current_sample:
+        if not self.enabled:
             return
-        self._all_samples[self._sample_counter] = self._current_sample
-        self._current_sample = {}
+        has_data = (
+            bool(self._current_indices)
+            or bool(self._current_masks)
+            or bool(self._sparse_ratios)
+        )
+        if not has_data:
+            return
+        if self._current_indices:
+            self._all_indices[self._sample_counter] = self._current_indices
+        if self._current_masks:
+            self._all_masks[self._sample_counter] = self._current_masks
+        self._current_indices = {}
+        self._current_masks = {}
         self._layer_counter = 0
         self._ratio_layer_counter = 0
         self._sample_counter += 1
@@ -99,24 +140,36 @@ class IndexCollector:
     def save(self, output_dir: str) -> None:
         """Save collected data to disk.
 
-        Per-sample ``.pt`` files, each mapping ``layer_idx`` to a dict with
-        keys ``v_idx``, ``s_idx``, ``block_mask``, ``bar_cnt``.
+        Each data type is written to its own subdirectory / file:
 
-        Sparse ratios: ``sparse_ratios.json`` with structure
-        ``{sample_idx: {layer_idx: ratio}}``.
+        - ``indices/sample_XXXX.pt`` — ``{layer_idx: {"v_idx", "s_idx"}}``
+        - ``masks/sample_XXXX.pt``   — ``{layer_idx: {"block_mask", "bar_cnt"}}``
+        - ``sparse_ratios.json``     — ``{sample_idx: {layer_idx: ratio}}``
         """
-        if not self._all_samples:
-            return
         os.makedirs(output_dir, exist_ok=True)
-        for sample_idx, layers in self._all_samples.items():
-            path = os.path.join(output_dir, f"sample_{sample_idx:04d}.pt")
-            torch.save(layers, path)
-        print(
-            f"{__name__} | Saved {len(self._all_samples)} sample(s) "
-            f"to {output_dir}"
-        )
 
-        # Save sparse ratios
+        if self._all_indices:
+            indices_dir = os.path.join(output_dir, "indices")
+            os.makedirs(indices_dir, exist_ok=True)
+            for sample_idx, layers in self._all_indices.items():
+                path = os.path.join(indices_dir, f"sample_{sample_idx:04d}.pt")
+                torch.save(layers, path)
+            print(
+                f"{__name__} | Saved {len(self._all_indices)} index sample(s) "
+                f"to {indices_dir}"
+            )
+
+        if self._all_masks:
+            masks_dir = os.path.join(output_dir, "masks")
+            os.makedirs(masks_dir, exist_ok=True)
+            for sample_idx, layers in self._all_masks.items():
+                path = os.path.join(masks_dir, f"sample_{sample_idx:04d}.pt")
+                torch.save(layers, path)
+            print(
+                f"{__name__} | Saved {len(self._all_masks)} mask sample(s) "
+                f"to {masks_dir}"
+            )
+
         if self._sparse_ratios:
             import json
             payload: Dict[str, Dict[str, float]] = {}
@@ -129,10 +182,12 @@ class IndexCollector:
 
     def reset(self) -> None:
         """Clear all collected data."""
-        self._current_sample = {}
+        self._current_indices = {}
+        self._current_masks = {}
         self._layer_counter = 0
         self._ratio_layer_counter = 0
-        self._all_samples = {}
+        self._all_indices = {}
+        self._all_masks = {}
         self._sample_counter = 0
         self._sparse_ratios = {}
 

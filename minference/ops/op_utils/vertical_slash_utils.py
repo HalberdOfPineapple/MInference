@@ -702,23 +702,26 @@ def build_index_local(
     else:
         v_idx, s_idx = v_size, s_size
 
-    if os.getenv("COLLECT_SPARSE_INDEX", "0") == "1":
+    if os.getenv("COLLECT_SPARSE_INDEX", "0") == "1" or os.getenv("COLLECT_BLOCK_MASK", "0") == "1":
         from minference.dist_ops.index_collector import get_index_collector
-        get_index_collector().record(v_idx.clone(), s_idx.clone())
+        collector = get_index_collector()
+        if collector.enabled:
+            collector.record(v_idx.clone(), s_idx.clone())
 
     num_blocks = triton.cdiv(num_tokens, granularity)
     block_mask, bar_idx, bar_cnt, _, _ = convert_indices(v_idx, s_idx, world_size, rank, num_blocks, granularity)
     block_mask = block_mask[rank]
 
-    if os.getenv("COLLECT_SPARSE_INDEX", "0") == "1":
+    if os.getenv("COLLECT_SPARSE_INDEX", "0") == "1" or os.getenv("COLLECT_BLOCK_MASK", "0") == "1":
         from minference.dist_ops.index_collector import (
             compute_sparse_ratio_local,
             get_index_collector,
         )
         collector = get_index_collector()
-        collector.record_mask(block_mask.clone(), bar_cnt.clone())
-        ratio = compute_sparse_ratio_local(block_mask, bar_cnt, num_tokens, granularity)
-        collector.record_sparse_ratio(ratio)
+        if collector.enabled:
+            collector.record_mask(block_mask.clone(), bar_cnt.clone())
+            ratio = compute_sparse_ratio_local(block_mask, bar_cnt, num_tokens, granularity)
+            collector.record_sparse_ratio(ratio)
 
     return block_mask, bar_idx, bar_cnt
 
