@@ -11,7 +11,8 @@ BASE_DIR="/scratch/MInference/mtraining"
 PROJECT_ROOT="$(cd "${BASE_DIR}/.." && pwd)" # path/to/MInference
 
 PIP="$(which pip)"
-echo "Using pip at: ${PIP}"
+PYTHON="$(which python)"
+echo "Using pip at: ${PIP}, python at: ${PYTHON}"
 
 sudo $PIP install -U pip wheel
 $PIP install "setuptools<81"
@@ -42,7 +43,7 @@ sudo cp -r $PROJECT_ROOT/mtraining/utils/comm_prof/NVIDIA_A100-SXM4-40GB/* $NNSC
 
 # Stamp dp_solver .so with cppimport checksum trailer if missing
 # (avoids PermissionError from cppimport trying to rebuild on read-only envs)
-sudo $PIP -c "
+sudo $PYTHON -c "
 from cppimport.importer import setup_module_data, is_build_needed
 from cppimport.checksum import checksum_save
 import os
