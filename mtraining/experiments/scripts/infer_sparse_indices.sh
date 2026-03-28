@@ -9,6 +9,10 @@
 # Unlike the training-based sparse ratio collection (train_qwen2_3B_sparse_ratio.sh),
 # this runs on a single GPU without distributed training or nnscaler.
 #
+# All experiment settings can be overridden via environment variables,
+# making this script composable with watch_and_infer.sh and
+# run_all_infer_sparse_indices.sh.
+#
 # Usage:
 #   bash infer_sparse_indices.sh [ITER_IDX | EPOCH-ITER_TAG]
 #   bash infer_sparse_indices.sh 0005        # load checkpoint 0000-0005
@@ -43,15 +47,19 @@ cd "${EXPR_HOME}"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 # -----------------------------------------------
-# Model settings
-MODEL_ID="Qwen/Qwen2.5-3B"
-MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
-# PATTERN_CONFIG="Qwen2.5_3B_flex_0.90"
-PATTERN_CONFIG="Qwen2.5_3B_kv_out_v32_fit_o_best_pattern"
+# Experiment settings (all overridable via env vars)
+MODEL_ID="${MODEL_ID:-Qwen/Qwen2.5-3B}"
+MODEL_CONFIG_PATH="${MODEL_CONFIG_PATH:-${EXPR_HOME}/model_configs/qwen2/lc_config_3B}"
+PATTERN_CONFIG="${PATTERN_CONFIG:-Qwen2.5_3B_kv_out_v32_fit_o_best_pattern}"
+DATASET_PATH="${DATASET_PATH:-/scratch/data_store/processed_datasets/long-context-524288}"
+MERGED_CKPT_BASE="${MERGED_CKPT_BASE:-/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_best_pattern_512K/merged_ckpts}"
+NUM_SAMPLES="${NUM_SAMPLES:-20}"
+SEED="${SEED:-42}"
+GRANULARITY="${GRANULARITY:-128}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-5}"
 
 # -----------------------------------------------
 # Checkpoint settings
-MERGED_CKPT_BASE="/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_best_pattern_512K/merged_ckpts"
 TARGET_EPOCH_IDX="0000"
 TARGET_ITER_IDX="${1:-0001}"
 
@@ -68,12 +76,6 @@ CKPT_PATH="${MERGED_CKPT_BASE}/${TARGET_CKPT_TAG}/pytorch_model.bin"
 
 echo "Checkpoint tag: ${TARGET_CKPT_TAG}"
 echo "Checkpoint path: ${CKPT_PATH}"
-
-# -----------------------------------------------
-# Dataset & sampling settings
-DATASET_PATH="/scratch/data_store/processed_datasets/long-context-524288"
-NUM_SAMPLES="${NUM_SAMPLES:-20}"
-SEED="${SEED:-42}"
 
 # -----------------------------------------------
 # Output settings
@@ -110,8 +112,8 @@ python experiments/scripts/infer_sparse_indices.py \
     --output_dir "${OUTPUT_DIR}" \
     --num_samples ${NUM_SAMPLES} \
     --seed ${SEED} \
-    --granularity 128 \
-    --save_interval 5 \
+    --granularity ${GRANULARITY} \
+    --save_interval ${SAVE_INTERVAL} \
     ${COLLECT_FLAGS} > ${LOG_FILE} 2>&1
 
 echo "Done. Data saved to ${OUTPUT_DIR}"

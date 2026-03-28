@@ -20,12 +20,17 @@
 #   bash watch_and_infer.sh --num_gpus 4             # use 4 GPUs
 #   bash watch_and_infer.sh --poll_interval 30       # poll every 30s
 #   bash watch_and_infer.sh --start_iter 5           # skip iters < 5
+#   bash watch_and_infer.sh --merged_ckpt_dir /path/to/merged_ckpts
 #
-# Environment variables (inherited by infer_sparse_indices.sh):
+# All experiment settings (model, dataset, pattern config, etc.) are
+# passed through to infer_sparse_indices.sh via environment variables.
+# See --help or the argument list below for the full set.
+#
+# Environment variables also accepted (lower priority than CLI args):
 #   COLLECT_SPARSE_INDEX  — collect v_idx/s_idx (default: 1)
 #   COLLECT_BLOCK_MASK    — collect block_mask/bar_cnt (default: 0)
-#   NUM_SAMPLES           — samples per checkpoint (default: inherited)
-#   SEED                  — random seed (default: inherited)
+#   NUM_SAMPLES           — samples per checkpoint (default: 20)
+#   SEED                  — random seed (default: 42)
 # ============================================================
 
 set -euo pipefail
@@ -39,21 +44,60 @@ NUM_GPUS=""
 POLL_INTERVAL=15
 START_EPOCH=0
 START_ITER=0
-MERGED_CKPT_DIR=""
+
+# Experiment settings — passed through to infer_sparse_indices.sh as env vars.
+# CLI args here override env vars; env vars override hardcoded defaults.
+OPT_MERGED_CKPT_BASE=""
+OPT_MODEL_ID=""
+OPT_MODEL_CONFIG_PATH=""
+OPT_PATTERN_CONFIG=""
+OPT_DATASET_PATH=""
+OPT_NUM_SAMPLES=""
+OPT_SEED=""
+OPT_GRANULARITY=""
+OPT_SAVE_INTERVAL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --num_gpus)      NUM_GPUS="$2";        shift 2 ;;
-        --poll_interval) POLL_INTERVAL="$2";   shift 2 ;;
-        --start_epoch)   START_EPOCH="$2";     shift 2 ;;
-        --start_iter)    START_ITER="$2";      shift 2 ;;
-        --merged_ckpt_dir) MERGED_CKPT_DIR="$2"; shift 2 ;;
+        --num_gpus)          NUM_GPUS="$2";              shift 2 ;;
+        --poll_interval)     POLL_INTERVAL="$2";         shift 2 ;;
+        --start_epoch)       START_EPOCH="$2";           shift 2 ;;
+        --start_iter)        START_ITER="$2";            shift 2 ;;
+        --merged_ckpt_dir)   OPT_MERGED_CKPT_BASE="$2"; shift 2 ;;
+        --model_id)          OPT_MODEL_ID="$2";          shift 2 ;;
+        --model_config_path) OPT_MODEL_CONFIG_PATH="$2"; shift 2 ;;
+        --pattern_config)    OPT_PATTERN_CONFIG="$2";    shift 2 ;;
+        --dataset_path)      OPT_DATASET_PATH="$2";      shift 2 ;;
+        --num_samples)       OPT_NUM_SAMPLES="$2";       shift 2 ;;
+        --seed)              OPT_SEED="$2";              shift 2 ;;
+        --granularity)       OPT_GRANULARITY="$2";       shift 2 ;;
+        --save_interval)     OPT_SAVE_INTERVAL="$2";     shift 2 ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--num_gpus N] [--poll_interval S] [--start_epoch E] [--start_iter I] [--merged_ckpt_dir DIR]"
+            echo "Usage: $0 [--num_gpus N] [--poll_interval S] [--start_epoch E] [--start_iter I]"
+            echo "          [--merged_ckpt_dir DIR] [--model_id ID] [--model_config_path PATH]"
+            echo "          [--pattern_config NAME] [--dataset_path PATH] [--num_samples N]"
+            echo "          [--seed N] [--granularity N] [--save_interval N]"
             exit 1 ;;
     esac
 done
+
+# -----------------------------------------------
+# Export experiment settings as env vars for infer_sparse_indices.sh.
+# CLI args take priority; otherwise fall through to the defaults in
+# infer_sparse_indices.sh.
+[ -n "$OPT_MERGED_CKPT_BASE" ]  && export MERGED_CKPT_BASE="$OPT_MERGED_CKPT_BASE"
+[ -n "$OPT_MODEL_ID" ]          && export MODEL_ID="$OPT_MODEL_ID"
+[ -n "$OPT_MODEL_CONFIG_PATH" ] && export MODEL_CONFIG_PATH="$OPT_MODEL_CONFIG_PATH"
+[ -n "$OPT_PATTERN_CONFIG" ]    && export PATTERN_CONFIG="$OPT_PATTERN_CONFIG"
+[ -n "$OPT_DATASET_PATH" ]      && export DATASET_PATH="$OPT_DATASET_PATH"
+[ -n "$OPT_NUM_SAMPLES" ]       && export NUM_SAMPLES="$OPT_NUM_SAMPLES"
+[ -n "$OPT_SEED" ]              && export SEED="$OPT_SEED"
+[ -n "$OPT_GRANULARITY" ]       && export GRANULARITY="$OPT_GRANULARITY"
+[ -n "$OPT_SAVE_INTERVAL" ]     && export SAVE_INTERVAL="$OPT_SAVE_INTERVAL"
+
+# Resolve MERGED_CKPT_BASE for the watcher's own polling loop.
+MERGED_CKPT_BASE="${MERGED_CKPT_BASE:-/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_best_pattern_512K/merged_ckpts}"
 
 # Auto-detect GPU count if not specified
 if [ -z "$NUM_GPUS" ]; then
@@ -63,14 +107,9 @@ if [ -z "$NUM_GPUS" ]; then
     fi
 fi
 
-# Default merged checkpoint directory (matches launch_auto_merge.sh layout)
-if [ -z "$MERGED_CKPT_DIR" ]; then
-    MERGED_CKPT_DIR="/blob/mtrain_expr_data_store/A100_32/mtrain_qwen/qwen_3B_best_pattern_512K/merged_ckpts"
-fi
-
 echo "============================================"
 echo " GPU-pool watcher for sparse index collection"
-echo "  Merged ckpt dir : ${MERGED_CKPT_DIR}"
+echo "  Merged ckpt dir : ${MERGED_CKPT_BASE}"
 echo "  GPUs            : ${NUM_GPUS}"
 echo "  Poll interval   : ${POLL_INTERVAL}s"
 echo "  Start filter    : epoch >= ${START_EPOCH}, iter >= ${START_ITER}"
@@ -150,14 +189,14 @@ dispatch() {
 # -----------------------------------------------
 # Main loop: poll for new merged checkpoints
 echo ""
-echo "Watching ${MERGED_CKPT_DIR} for new merged checkpoints..."
+echo "Watching ${MERGED_CKPT_BASE} for new merged checkpoints..."
 echo ""
 
 while true; do
-    if [ -d "$MERGED_CKPT_DIR" ]; then
+    if [ -d "$MERGED_CKPT_BASE" ]; then
         # Collect candidate checkpoint tags, sorted
         CANDIDATES=()
-        for entry in "$MERGED_CKPT_DIR"/*/; do
+        for entry in "$MERGED_CKPT_BASE"/*/; do
             [ -d "$entry" ] || continue
             tag=$(basename "$entry")
 
