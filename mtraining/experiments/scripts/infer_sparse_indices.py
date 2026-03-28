@@ -91,13 +91,56 @@ def load_model(args):
     if "model" in state_dict and not any("." in k for k in list(state_dict.keys())[:5]):
         state_dict = state_dict["model"]
 
-    # Strip "model." prefix if present (from merge_checkpoint)
-    first_key = next(iter(state_dict))
-    if first_key.startswith("model."):
-        state_dict = {k[len("model."):]: v for k, v in state_dict.items()}
+    # Detect key format and convert to the model's expected dotted keys.
+    #
+    # The merge_ckpts post-processing (merge_utils.py) saves a flat dict
+    # with nnscaler underscore keys stripped of their "model_" prefix,
+    # e.g. "layers_0_self_attn_q_proj_weight".  The model expects dotted
+    # keys like "model.layers.0.self_attn.q_proj.weight".
+    model_keys = set(model.state_dict().keys())
+    ckpt_keys = set(state_dict.keys())
 
-    model.load_state_dict(state_dict, strict=False)
-    logger.info("Checkpoint loaded successfully")
+    if ckpt_keys & model_keys:
+        # Keys already in the correct format — use as-is
+        pass
+    elif not any("." in k for k in list(ckpt_keys)[:5]):
+        # Flat underscore keys from nnscaler merge post-processing.
+        # Build a reverse map: underscore_key -> dotted_key, then match
+        # checkpoint keys (possibly with the stripped "model_" prefix).
+        key_map = {mk.replace(".", "_"): mk for mk in model_keys}
+        new_state_dict = {}
+        unmapped = []
+        for fk, v in state_dict.items():
+            if fk in key_map:
+                new_state_dict[key_map[fk]] = v
+            elif f"model_{fk}" in key_map:
+                new_state_dict[key_map[f"model_{fk}"]] = v
+            else:
+                unmapped.append(fk)
+        if unmapped:
+            logger.warning(f"Could not map {len(unmapped)} checkpoint keys: {unmapped[:5]}")
+        state_dict = new_state_dict
+    else:
+        # Dotted keys — only strip "model." prefix if the keys don't
+        # already match (e.g. double "model.model." prefix).
+        first_key = next(iter(state_dict))
+        if first_key.startswith("model.") and first_key not in model_keys:
+            state_dict = {k[len("model."):]: v for k, v in state_dict.items()}
+
+    result = model.load_state_dict(state_dict, strict=False)
+    num_loaded = len(model_keys) - len(result.missing_keys)
+    if num_loaded == 0:
+        raise RuntimeError(
+            f"No checkpoint weights were loaded! "
+            f"First 3 ckpt keys: {list(state_dict.keys())[:3]}, "
+            f"First 3 model keys: {list(model_keys)[:3]}"
+        )
+    logger.info(f"Checkpoint loaded: {num_loaded}/{len(model_keys)} parameters updated")
+    if result.missing_keys:
+        logger.warning(f"Missing keys ({len(result.missing_keys)}): {result.missing_keys[:5]}")
+    if result.unexpected_keys:
+        logger.warning(f"Unexpected keys ({len(result.unexpected_keys)}): {result.unexpected_keys[:5]}")
+
     return model, model_config
 
 
