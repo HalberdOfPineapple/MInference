@@ -9,16 +9,23 @@ export NUM_NODES=4
 export REUSE_TYPE="match"
 export FORCE_TRITON=1
 
-export HF_HOME=/scratch/hf_cache/huggingface
-mkdir -p $HF_HOME
+export SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export EXPR_EXPERIMENTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+export HF_TOKEN_PATH="${SCRIPT_DIR}/.ae_hf_token"
+if [ -f "$HF_TOKEN_PATH" ]; then
+    export HF_TOKEN="$(tr -d '\n\r' < "$HF_TOKEN_PATH")"
+fi
+export HF_HOME="${EXPR_EXPERIMENTS_DIR}/hf_cache/huggingface"
+mkdir -p "$HF_HOME"
 export HF_TRUST_REMOTE_CODE=true
 export HF_DATASETS_TRUST_REMOTE_CODE=true
 
 export MASTER_ADDR="node-0"
 export MASTER_PORT="12345"
 
-export NNSCALER_HOME="${HOME}/.conda/envs/ptca/lib/python3.10/site-packages/nnscaler/"
-export PYTHONPATH="${NNSCALER_HOME}:${PYTHONPATH}"
+PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python)"
+export NNSCALER_HOME="$("$PYTHON_BIN" -c 'import pathlib, nnscaler; print(pathlib.Path(nnscaler.__file__).resolve().parent)')"
+export PYTHONPATH="${NNSCALER_HOME}:${PYTHONPATH:-}"
 
 # -----------------------------------------------
 # TODO: Basic Environment Settings
@@ -28,17 +35,16 @@ export GPU_PER_NODE=8
 export WORLD_SIZE=32
 export GPU_SET="${GPU_NAME}_${WORLD_SIZE}"
 
-export SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export EXPR_HOME="$(cd "${SCRIPT_DIR}/../.." && pwd)" # .../mtraining
-export EXPR_DATA_STORE="/blob/mtrain_expr_data_store/${GPU_SET}"
-mkdir -p $EXPR_DATA_STORE
-cd $EXPR_HOME
+export EXPR_DATA_STORE="${EXPR_EXPERIMENTS_DIR}/expr_data_store/${GPU_SET}"
+mkdir -p "$EXPR_DATA_STORE"
+cd "$EXPR_HOME" || exit 1
 
 # ------------------------------------------
 export EXPR_DIR="mtrain_qwen" # Name for the experiment set
 export EXPR_NAME="qwen_3B_fp090_512K" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
-export DATASET_PATH="/scratch/datasets/processed_datasets/long-context-524288"
+export DATASET_PATH="${EXPR_EXPERIMENTS_DIR}/processed_datasets/long-context-524288"
 export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
