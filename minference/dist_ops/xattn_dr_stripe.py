@@ -15,7 +15,6 @@ from minference.dist_ops.utils import (
     shuffle_block_mask_striped,
     shuffle_striped_input,
     update_out_and_lse,
-    compute_sparse_ratio_xattn,
 )
 
 
@@ -303,18 +302,6 @@ class XAttnDRStripeFunc(torch.autograd.Function):
             ring_attn=True,
             **xattn_params,
         )
-        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
-            from mtraining.trainer import get_sparse_ratio_collector
-
-            _world_size = dist.get_world_size(group)
-            get_sparse_ratio_collector().record(
-                layer_idx=layer_idx,
-                compute_fn=lambda: compute_sparse_ratio_xattn(
-                    block_mask, q.shape[1], granularity, _world_size, group,
-                ),
-                group=group,
-            )
-
 
         q = shuffle_striped_input(
             to_send=q, dim=1, granularity=granularity, process_group=group

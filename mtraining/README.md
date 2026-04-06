@@ -25,7 +25,7 @@ bash setup.sh
 `setup.sh` will:
 
 - install pinned training dependencies (including nnScaler and FlashAttention variants),
-- install `MInference` from source (`pip install -e .`) and then `mtraining` in editable mode.
+- install `minference` from source (`pip install -e .`) and then `mtraining` in editable mode.
 
 
 
@@ -87,13 +87,13 @@ which specifies the sparse pattern file under `minference/configs` and the usage
 
 ## Artifact Evaluation
 
-This section provides instructions for artifact evaluation reviewers. We apply for the **Available** and **Functional** badges. Please follow the guidelines above to set up the environment beforehand.
+This section provides instructions for artifact evaluation reviewers. We apply for the **Available** and **Functional** badges. Please follow the guideline above to set up the environment before running any session.
 
 
 
 ### Artifact Available
 
-The artifact is archived on Zenodo with DOI: **[TODO: fill in actual DOI]**
+The artifact is archived on Zenodo , see the corresponding DOI in HotCRP review page.
 
 
 
@@ -108,7 +108,7 @@ Validates the core contribution: distributed sparse attention operators produce 
 RING_TEST_WORLD_SIZE=2 bash minference/dist_ops/test/run_ring_pytests.sh
 ```
 
-This runs three test suites covering MInference (zigzag, stripe, DR-stripe), MOBA, and xAttention operators. All tests must pass (ATOL=1e-2, RTOL=1e-2). Time: ~10–30 minutes.
+This runs three test suites covering MTraining, MOBA, and XAttention operators. All tests must pass (ATOL=1e-2, RTOL=1e-2). Time: ~10–30 minutes.
 
 
 
