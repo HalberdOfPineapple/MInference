@@ -78,10 +78,73 @@ where `minfer` refer to our dynamic sparse attention operators. You may need to 
 
 ```yaml
 pattern_config_name: Qwen2.5_3B_flex_0.90
-implementation: stripe
+implementation: dr_stripe
 ```
 
 which specifies the sparse pattern file under `minference/configs` and the usage of striped Ring Attention. The field `implementation` can be `zigzag`, `stripe` and `dr_stripe`, corresponding to Zigzag, Striped and Hierarchical Striped Ring Attention respectively.
+
+
+
+## Artifact Evaluation
+
+This section provides instructions for artifact evaluation reviewers. We apply for the **Available** and **Functional** badges. Please follow the guidelines above to set up the environment beforehand.
+
+
+
+### Artifact Available
+
+The artifact is archived on Zenodo with DOI: **[TODO: fill in actual DOI]**
+
+
+
+### Artifact Functional: Evaluation Protocol
+
+#### Level 1 — Operator Correctness (minimum: 2 GPUs, ≥40GB VRAM each)
+
+Validates the core contribution: distributed sparse attention operators produce correct forward/backward results against dense FlashAttention-2 references.
+
+```bash
+# Default uses 4 GPUs; override for 2:
+RING_TEST_WORLD_SIZE=2 bash minference/dist_ops/test/run_ring_pytests.sh
+```
+
+This runs three test suites covering MInference (zigzag, stripe, DR-stripe), MOBA, and xAttention operators. All tests must pass (ATOL=1e-2, RTOL=1e-2). Time: ~10–30 minutes.
+
+
+
+#### Level 2 — End-to-End Training (minimum: 16× A100-40GB or 8× A100-80GB)
+
+Validates the full training pipeline corresponding to the paper's reported results.
+
+```bash
+# 1. Prepare data:
+bash mtraining/experiments/scripts/prolong_data_prepare.sh
+
+# 2. Launch training:
+bash mtraining/experiments/scripts/train_qwen2_3B_ProLong512K.sh
+```
+
+**Important:** Before running training scripts, set `MASTER_ADDR` in the script:
+
+- **Single-node** (all GPUs on one machine): set `MASTER_ADDR=localhost`
+- **Multi-node**: set `MASTER_ADDR` to the hostname or IP of node 0
+
+The default value `node-0` is a placeholder. All other paths are derived automatically from the script location.
+
+
+
+#### Script-to-Paper Correspondence
+
+| Paper Reference                                | Script / Config                                              |
+| ---------------------------------------------- | ------------------------------------------------------------ |
+| Qwen2.5-3B Training                            | `experiments/scripts/train_qwen2_3B_ProLong512K.sh` + `train_attn_configs/qwen_flex_090.yaml` |
+| LLaMA-3-8B Training                            | `experiments/scripts/train_llama_8B_ProLong512K.sh` + `train_attn_configs/llama_flex_090.yaml` |
+| Dense baseline for Qwen2.5-3B Training         | `experiments/scripts/train_dense_qwen2_3B_ProLong512K.sh`    |
+| Method: Hierarchical Balanced Sparse Attention | `minference/dist_ops/minfer_dr_striped.py:MInferDRStripeFunc` |
+| Method Component: Dynamic sparse index         | `minference/ops/op_utils/vertical_slash_utils.py:build_index` |
+| Method Component: Hierarchical Ring Attention  | `minference/dist_ops/utils.py:RingComm`                      |
+| Method Component: Balanced Ring Attention      | `minference/dist_ops/minfer_dr_striped.py:minfer_dr_stripe_triton_forward_inner` and `minference/dist_ops/minfer_striped.py:MInferStripeFunc` |
+
 
 
 

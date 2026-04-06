@@ -27,7 +27,6 @@ from .utils import (
     get_outer_ring,
     recover_striped_output,
     shuffle_striped_input,
-    compute_sparse_ratio,
 )
 
 
@@ -645,17 +644,6 @@ class MInferDRStripeFunc(torch.autograd.Function):
         block_mask, bar_idx, bar_cnt, bar_pos, v_idx, v_cnt = build_index(
             q, k, v_size, s_size, num_tokens_local, granularity=granularity, group=group
         )
-        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
-            from mtraining.trainer import get_sparse_ratio_collector
-            _world_size = dist.get_world_size(group)
-            get_sparse_ratio_collector().record(
-                layer_idx=layer_idx,
-                compute_fn=lambda: compute_sparse_ratio(
-                    block_mask, bar_cnt, num_tokens_local,
-                    _world_size, granularity, group,
-                ),
-                group=group,
-            )
 
 
         # ----------------------------------------------
