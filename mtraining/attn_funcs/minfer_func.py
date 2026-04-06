@@ -73,7 +73,6 @@ def minfer_op(
             window_size=(-1, -1),
             deterministic=False,
             return_attn_probs=False,
-            group=group,
         )
     else:
         attn_output = minference_flash_attn_triton_func(

@@ -24,7 +24,6 @@ from nnscaler.runtime.device import DeviceGroup
 
 from minference.dist_ops.striped_attention import stripe_flash_attn_func
 from minference.dist_ops.zigzag_attention import zigzag_ring_flash_attn_func
-
 from .utils import nnscaler_upad_input
 
 
@@ -122,7 +121,7 @@ def wrap_zigzag_attn_func(
     alibi_slopes: Tensor = None,
     deterministic: bool = False,
     return_attn_probs: bool = False,
-    process_group: Tuple[int] = None,
+    process_group: Optional[Tuple[int]] = None,
 ) -> Tensor:
     if process_group is None or len(process_group) == 1:
         # there is an additional checker for the `softmax_scale`, which is equivalent
