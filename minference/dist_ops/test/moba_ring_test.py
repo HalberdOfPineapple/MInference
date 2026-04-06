@@ -29,7 +29,7 @@ from minference.ops.utils import set_seed
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-2
 _RTOL = 1e-2
-_WORLD_SIZE = 4
+_WORLD_SIZE = int(os.environ.get("RING_TEST_WORLD_SIZE", 4))
 
 
 # ------------- helpers --------------------------------------------------------

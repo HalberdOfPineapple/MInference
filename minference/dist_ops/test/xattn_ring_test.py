@@ -27,7 +27,7 @@ from minference.ops.xattention_fa import xattn_flash_attn_func
 # ------------- constants ------------------------------------------------------
 _ATOL = 1e-1
 _RTOL = 1e-1
-_WORLD_SIZE = 4
+_WORLD_SIZE = int(os.environ.get("RING_TEST_WORLD_SIZE", 4))
 
 
 def _run_worker(

@@ -28,6 +28,10 @@ declare -a LOG_FILES=(
   "${SCRIPT_DIR}/xattn_ring_test.log"
 )
 
+# World size for ring-attention tests (default: 4).
+# Override at call-site: RING_TEST_WORLD_SIZE=2 bash run_ring_pytests.sh
+export RING_TEST_WORLD_SIZE="${RING_TEST_WORLD_SIZE:-4}"
+
 overall_rc=0
 for i in "${!TEST_FILES[@]}"; do
   test_file="${TEST_FILES[$i]}"
