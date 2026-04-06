@@ -29,7 +29,15 @@ def get_tokenizer(
     )
     special_tokens_dict = dict()
     if tokenizer.pad_token is None:
-        special_tokens_dict["pad_token"] = default_pad_token
+        # Reuse eos_token as pad_token to avoid expanding the vocabulary.
+        # Adding a brand-new "[PAD]" token via add_special_tokens would assign it
+        # the next unused ID (e.g. 128256 for Llama-3), which exceeds the model's
+        # embed_tokens table size (vocab_size=128256, valid ids 0-128255) and causes
+        # CUDA out-of-bounds assertions during embedding lookup.
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        else:
+            special_tokens_dict["pad_token"] = default_pad_token
     if tokenizer.eos_token is None:
         special_tokens_dict["eos_token"] = default_eos_token
     if tokenizer.bos_token is None:
@@ -78,7 +86,7 @@ def aggregate_outputs_fn(loss_outputs, sync_group) -> AggregatedOutputs:
 
 
 def load_comm_profile_data(args):
-    if args.plan_ngpus in [2, 4, 8, 16]:
+    if args.plan_ngpus in [1, 2, 4, 8, 16]:
         logger.info(
             f"Use nnscaler's built-in communication profiling data for {args.plan_ngpus} GPUs"
         )

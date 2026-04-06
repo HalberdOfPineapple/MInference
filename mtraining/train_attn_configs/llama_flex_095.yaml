@@ -1,0 +1,2 @@
+pattern_config_name: Llama3-8B-Instruct_flex_0.95
+implementation: dr_stripe

@@ -10,7 +10,7 @@ if [ -z "$NODE_RANK" ]; then
     NODE_RANK=0
 fi
 
-export NUM_NODES=4
+export NUM_NODES=1
 export REUSE_TYPE="match"
 export FORCE_TRITON=1
 
@@ -37,7 +37,7 @@ export PYTHONPATH="${NNSCALER_HOME}:${PYTHONPATH:-}"
 SEQUENCE_LENGTH=524288
 export GPU_NAME=A100
 export GPU_PER_NODE=8
-export WORLD_SIZE=32
+export WORLD_SIZE=4
 export GPU_SET="${GPU_NAME}_${WORLD_SIZE}"
 
 export EXPR_HOME="$(cd "${SCRIPT_DIR}/../.." && pwd)" # .../mtraining
@@ -46,15 +46,15 @@ mkdir -p "$EXPR_DATA_STORE"
 cd "$EXPR_HOME" || exit 1
 
 # ------------------------------------------
-export EXPR_DIR="mtrain_qwen" # Name for the experiment set
-export EXPR_NAME="qwen_3B_fp090_512K" # Name for the single experiment run
-export MODEL_ID="Qwen/Qwen2.5-3B"
+export EXPR_DIR="mtrain_llama" # Name for the experiment set
+export EXPR_NAME="llama_8B_fp090_512K" # Name for the single experiment run
+export MODEL_ID="meta-llama/Meta-Llama-3-8B-Instruct"
 MODEL_ID_SAFE="${MODEL_ID//\//"--"}"
 export DATASET_PATH="${EXPR_EXPERIMENTS_DIR}/processed_datasets/long-context-524288/${MODEL_ID_SAFE}"
-export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
+export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/llama3/lc_config_8B"  # TODO: provide model config
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
-export TRAIN_ATTN_CONFIG_PATH="${EXPR_HOME}/train_attn_configs/qwen_flex_090.yaml"
+export TRAIN_ATTN_CONFIG_PATH="${EXPR_HOME}/train_attn_configs/llama_flex_090.yaml"  # TODO: provide attn config
 export ATTN_TYPE="minfer"
 
 # ------------------------------------------
@@ -79,9 +79,9 @@ else
     FORCE_BROADCAST_ALL_FLAG=""
 fi
 
-export GLOBAL_BATCH_SIZE=64
+export GLOBAL_BATCH_SIZE=8 
 export MICRO_BATCH_SIZE=1
-export MEM_CONSTRAINT=40
+export MEM_CONSTRAINT=40 
 
 export NUM_ITER=0
 export NUM_EPOCH=1
@@ -98,7 +98,6 @@ fi
 
 # -------------------------------------------
 # Logging Path
-
 export LOG_PATH="${EXPR_DATA_STORE}/${EXPR_DIR}/${EXPR_NAME}/rank_${NODE_RANK}"
 mkdir -p $LOG_PATH
 max=0

@@ -27,6 +27,7 @@ from .utils import (
     get_outer_ring,
     recover_striped_output,
     shuffle_striped_input,
+    compute_sparse_ratio,
 )
 
 
@@ -45,7 +46,7 @@ def minfer_dr_stripe_forward_inner(
     lse: torch.Tensor,  # [batch_size, num_qo_heads, num_tokens]
     layer_idx: int,
     softmax_scale: float,
-    block_mask: torch.Tensor,  # [world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
+    block_mask: torch.Tensor,  # [inner_world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
     bar_idx: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, max_v_size]
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
     v_idx: torch.Tensor,  # [batch_size, num_qo_heads, max_v_size]
@@ -54,7 +55,7 @@ def minfer_dr_stripe_forward_inner(
     bar_v: torch.Tensor,  # [batch_size, max_v_size, num_qo_heads, head_dim]
     granularity: int = 128,
 ):
-    inner_comm = RingComm(process_group, False, inner_ring)
+    inner_comm = RingComm.create(process_group, False, inner_ring, double_ring="inner")
     inner_rank = inner_ring.index(inner_comm.rank)
     num_inner_steps = len(inner_ring)
 
@@ -111,7 +112,7 @@ def minfer_dr_stripe_forward_outer(
     v_cnt: torch.Tensor,  # [batch_size, num_qo_heads, world_size + 1]
     granularity: int = 128,
 ):
-    outer_comm = RingComm(process_group, False, outer_ring)
+    outer_comm = RingComm.create(process_group, False, outer_ring, double_ring="outer")
     outer_rank = outer_ring.index(outer_comm.rank)
     num_outer_steps = len(outer_ring)
 
@@ -186,8 +187,8 @@ def minfer_dr_stripe_backward_inner(
     bar_dv: torch.Tensor,  # [batch_size, max_v_size, num_qo_heads, head_dim]
     granularity: int = 128,
 ):
-    inner_kv_comm = RingComm(process_group, False, inner_ring)
-    inner_d_kv_comm = RingComm(process_group, False, inner_ring)
+    inner_kv_comm = RingComm.create(process_group, False, inner_ring, double_ring="inner", slot=0)
+    inner_d_kv_comm = RingComm.create(process_group, False, inner_ring, double_ring="inner", slot=1)
     inner_rank = inner_ring.index(inner_kv_comm.rank)
     num_inner_steps = len(inner_ring)
 
@@ -266,8 +267,8 @@ def minfer_dr_stripe_backward_outer(
     bar_v: torch.Tensor,  # [batch_size, max_v_size, num_qo_heads, head_dim]
     granularity: int = 128,
 ):
-    outer_kv_comm = RingComm(process_group, False, outer_ring)
-    outer_d_kv_comm = RingComm(process_group, False, outer_ring)
+    outer_kv_comm = RingComm.create(process_group, False, outer_ring, double_ring="outer", slot=0)
+    outer_d_kv_comm = RingComm.create(process_group, False, outer_ring, double_ring="outer", slot=1)
     outer_rank = outer_ring.index(outer_kv_comm.rank)
     num_outer_steps = len(outer_ring)
 
@@ -366,7 +367,7 @@ def minfer_dr_stripe_triton_forward_inner(
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
     granularity: int = 128,
 ):
-    inner_comm = RingComm(process_group, False, inner_ring)
+    inner_comm = RingComm.create(process_group, False, inner_ring, double_ring="inner")
     inner_rank = inner_ring.index(inner_comm.rank)
     num_inner_steps = len(inner_ring)
 
@@ -418,7 +419,7 @@ def minfer_dr_stripe_triton_forward_outer(
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
     granularity: int = 128,
 ):
-    outer_comm = RingComm(process_group, False, outer_ring)
+    outer_comm = RingComm.create(process_group, False, outer_ring, double_ring="outer")
     outer_rank = outer_ring.index(outer_comm.rank)
     num_outer_steps = len(outer_ring)
 
@@ -476,8 +477,8 @@ def minfer_dr_stripe_triton_backward_inner(
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
     granularity: int = 128,
 ):
-    inner_kv_comm = RingComm(process_group, False, inner_ring)
-    inner_d_kv_comm = RingComm(process_group, False, inner_ring)
+    inner_kv_comm = RingComm.create(process_group, False, inner_ring, double_ring="inner", slot=0)
+    inner_d_kv_comm = RingComm.create(process_group, False, inner_ring, double_ring="inner", slot=1)
     inner_rank = inner_ring.index(inner_kv_comm.rank)
     num_inner_steps = len(inner_ring)
 
@@ -557,8 +558,8 @@ def minfer_dr_stripe_triton_backward_outer(
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
     granularity: int = 128,
 ):
-    outer_kv_comm = RingComm(process_group, False, outer_ring)
-    outer_d_kv_comm = RingComm(process_group, False, outer_ring)
+    outer_kv_comm = RingComm.create(process_group, False, outer_ring, double_ring="outer", slot=0)
+    outer_d_kv_comm = RingComm.create(process_group, False, outer_ring, double_ring="outer", slot=1)
     outer_rank = outer_ring.index(outer_kv_comm.rank)
     num_outer_steps = len(outer_ring)
 
@@ -644,6 +645,18 @@ class MInferDRStripeFunc(torch.autograd.Function):
         block_mask, bar_idx, bar_cnt, bar_pos, v_idx, v_cnt = build_index(
             q, k, v_size, s_size, num_tokens_local, granularity=granularity, group=group
         )
+        if os.getenv("COLLECT_SPARSE_RATIO", "0") == "1":
+            from mtraining.trainer import get_sparse_ratio_collector
+            _world_size = dist.get_world_size(group)
+            get_sparse_ratio_collector().record(
+                layer_idx=layer_idx,
+                compute_fn=lambda: compute_sparse_ratio(
+                    block_mask, bar_cnt, num_tokens_local,
+                    _world_size, granularity, group,
+                ),
+                group=group,
+            )
+
 
         # ----------------------------------------------
         # Shuffle

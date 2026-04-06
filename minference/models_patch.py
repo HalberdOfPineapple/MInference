@@ -11,7 +11,6 @@ from .patch import (
     new_patch,
     patch_hf,
 )
-from modules.leank import patch_leank
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -75,14 +74,6 @@ class MInference:
         if self.config.kv_type == "streamingllm":
             self.config.attn_kwargs.setdefault("n_local", 3968)
             self.config.attn_kwargs.setdefault("n_init", 128)
-
-        if self.config.kv_type == "leank":
-            self.config.attn_kwargs.setdefault("recent_size", 768)
-            self.config.attn_kwargs.setdefault("sink_size", 128)
-            self.config.attn_kwargs.setdefault("accumu_size", 128)
-            self.config.attn_kwargs.setdefault("leank_path", self.config.leank_path)
-            self.config.attn_kwargs.setdefault("round_to", 32)
-            patch_leank(model, self.config)
 
         if self.config.attn_type == "flexprefill":
             self.config.attn_kwargs.setdefault("gamma", 0.9)

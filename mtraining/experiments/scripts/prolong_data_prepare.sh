@@ -8,7 +8,7 @@ EXPR_EXPERIMENTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 export HF_TRUST_REMOTE_CODE=1
-export HF_TOKEN_PATH="${SCRIPT_DIR}/.ae_hf_token"
+export HF_TOKEN_PATH="~/.hf_access_token" # path/to hf_access_token
 if [ -f "$HF_TOKEN_PATH" ]; then
     export HF_TOKEN="$(tr -d '\n\r' < "$HF_TOKEN_PATH")"
 fi
@@ -35,7 +35,8 @@ fi
 # ------------------------------------------
 # Data Processing
 cd "$BASE_DIR" || exit 1
-MODEL_ID="Qwen/Qwen2.5-7B"
+MODEL_ID="${MODEL_ID:-Qwen/Qwen2.5-7B}"
+MODEL_ID_SAFE="${MODEL_ID//\//"--"}"
 PROCESSED_DATA_DIR="${EXPR_EXPERIMENTS_DIR}/processed_datasets"
 mkdir -p "$PROCESSED_DATA_DIR"
 
@@ -44,5 +45,5 @@ torchrun --nproc_per_node=1 \
     --model_id $MODEL_ID \
     --dataset_mix fixed_524288 \
     --dataset_path "$RAW_DATASET_DIR/long-context-524288" \
-    --save_path "$PROCESSED_DATA_DIR/long-context-524288" \
+    --save_path "$PROCESSED_DATA_DIR/long-context-524288/${MODEL_ID_SAFE}" \
     --sample_interval 4

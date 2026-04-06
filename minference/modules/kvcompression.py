@@ -11,7 +11,6 @@ from transformers.models.glm.modeling_glm import (
 )
 
 from .kivi import KiviCache
-from .leank import LeanKCache
 from .pyramidkv import PyramidKVCluster
 from .quest import *
 from .retr_attn import RetrAttnCache
@@ -459,5 +458,4 @@ method_to_cache_obj = {
     "quest": DynamicCacheWithRepeat,
     "retr_attn": RetrAttnCache,
     "kivi": KiviCache,
-    "leank": LeanKCache,
 }

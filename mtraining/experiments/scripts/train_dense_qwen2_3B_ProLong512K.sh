@@ -6,13 +6,18 @@
 
 i=$(hostname | awk -F'-' '{print $2}')
 NODE_RANK=$i
+# if NODE_RANK is '', set it to 0
+if [ -z "$NODE_RANK" ]; then
+    NODE_RANK=0
+fi
+
 export NUM_NODES=4
 export REUSE_TYPE="match"
 export FORCE_TRITON=1
 
 export SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export EXPR_EXPERIMENTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-export HF_TOKEN_PATH="${SCRIPT_DIR}/.ae_hf_token"
+export HF_TOKEN_PATH=~/.hf_access_token  # path/to/hf_access_token
 if [ -f "$HF_TOKEN_PATH" ]; then
     export HF_TOKEN="$(tr -d '\n\r' < "$HF_TOKEN_PATH")"
 fi
@@ -45,7 +50,8 @@ cd "$EXPR_HOME" || exit 1
 export EXPR_DIR="dense_qwen" # Name for the experiment set
 export EXPR_NAME="qwen_3B_dense" # Name for the single experiment run
 export MODEL_ID="Qwen/Qwen2.5-3B"
-export DATASET_PATH="${EXPR_EXPERIMENTS_DIR}/processed_datasets/long-context-524288"
+MODEL_ID_SAFE="${MODEL_ID//\//"--"}"
+export DATASET_PATH="${EXPR_EXPERIMENTS_DIR}/processed_datasets/long-context-524288/${MODEL_ID_SAFE}"
 export MODEL_CONFIG_PATH="${EXPR_HOME}/model_configs/qwen2/lc_config_3B"
 echo "Using model config path: $MODEL_CONFIG_PATH"
 TRANSFER_CONFIG_DIR="none"
