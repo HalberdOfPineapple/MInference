@@ -27,8 +27,6 @@ bash setup.sh
 - install pinned training dependencies (including nnScaler and FlashAttention variants),
 - install `minference` from source (`pip install -e .`) and then `mtraining` in editable mode.
 
-
-
 ## Operator Correctness Tests
 
 From repository root:
@@ -93,11 +91,11 @@ This section provides instructions for artifact evaluation reviewers. We apply f
 
 ### Artifact Available
 
-The artifact is archived on Zenodo , see the corresponding DOI in HotCRP review page.
+The artifact is archived on Zenodo, see the corresponding DOI in HotCRP review page.
 
 
 
-### Artifact Functional: Evaluation Protocol
+### Artifact Functional
 
 #### Level 1 — Operator Correctness (minimum: 2 GPUs, ≥40GB VRAM each)
 
@@ -108,7 +106,7 @@ Validates the core contribution: distributed sparse attention operators produce 
 RING_TEST_WORLD_SIZE=2 bash minference/dist_ops/test/run_ring_pytests.sh
 ```
 
-This runs three test suites covering MTraining, MOBA, and XAttention operators. All tests must pass (ATOL=1e-2, RTOL=1e-2). Time: ~10–30 minutes.
+This runs three test suites covering MTraining, MOBA, and XAttention operators. All tests must pass. Time: ~10–30 minutes.
 
 
 
@@ -128,6 +126,8 @@ bash mtraining/experiments/scripts/train_qwen2_3B_ProLong512K.sh
 
 - **Single-node** (all GPUs on one machine): set `MASTER_ADDR=localhost`
 - **Multi-node**: set `MASTER_ADDR` to the hostname or IP of node 0
+
+Additionally, please set the `HF_TOKEN_PATH` in the training script to the file containing your huggingface access token.
 
 The default value `node-0` is a placeholder. All other paths are derived automatically from the script location.
 
