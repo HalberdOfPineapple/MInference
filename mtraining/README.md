@@ -127,9 +127,11 @@ bash mtraining/experiments/scripts/train_qwen2_3B_ProLong512K.sh
 - **Single-node** (all GPUs on one machine): set `MASTER_ADDR=localhost`
 - **Multi-node**: set `MASTER_ADDR` to the hostname or IP of node 0
 
+The default value `node-0` is a placeholder. All other paths are derived automatically from the script location.
+
 Additionally, please set the `HF_TOKEN_PATH` in the training script to the file containing your huggingface access token.
 
-The default value `node-0` is a placeholder. All other paths are derived automatically from the script location.
+
 
 
 
