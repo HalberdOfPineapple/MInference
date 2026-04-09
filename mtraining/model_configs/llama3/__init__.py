@@ -1,6 +1,11 @@
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 from .configuration_llama import LlamaConfig
 from .modeling_llama import (
-    LlamaForCausalLM, LlamaAttention, 
-    apply_rotary_pos_emb, repeat_kv,
-    LLAMA_ATTN_FUNCS
+    LLAMA_ATTN_FUNCS,
+    LlamaAttention,
+    LlamaForCausalLM,
+    apply_rotary_pos_emb,
+    repeat_kv,
 )

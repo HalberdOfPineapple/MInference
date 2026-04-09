@@ -1,15 +1,17 @@
-import torch
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
+
 from typing import Optional
 
-from torch import nn, Tensor
-from torch.overrides import (
-    has_torch_function_variadic,
-    handle_torch_function
-)
+import torch
 from nnscaler.graph.parser.register import register_op
+from torch import Tensor, nn
+from torch.overrides import handle_torch_function, has_torch_function_variadic
 
 DEVICE_TYPE = "CUDA" if not torch.version.hip else "HIP"
 MAX_CHUNK = 32 * 1024
+
+
 def chunked_embedding(
     input_tensor: Tensor,
     weight: Tensor,
@@ -20,18 +22,21 @@ def chunked_embedding(
     pieces = []
     for seq_slice in torch.split(input_tensor, MAX_CHUNK, dim=1):
         out_part = torch.embedding(
-            weight, seq_slice, # [B, MAX_CHUNK] 
-            padding_idx or -1, 
-            scale_grad_by_freq, sparse
+            weight,
+            seq_slice,  # [B, MAX_CHUNK]
+            padding_idx or -1,
+            scale_grad_by_freq,
+            sparse,
         )
         pieces.append(out_part)
 
     cat_embedding = torch.cat(pieces, dim=1)
     return cat_embedding
 
+
 def custom_embedding(
-    input: Tensor, # [B, N]
-    weight: Tensor, # [V, D]
+    input: Tensor,  # [B, N]
+    weight: Tensor,  # [V, D]
     padding_idx: Optional[int] = None,
     max_norm: Optional[float] = None,
     norm_type: float = 2.0,
@@ -53,9 +58,13 @@ def custom_embedding(
 
     if padding_idx is not None:
         if padding_idx > 0:
-            assert padding_idx < weight.size(0), "Padding_idx must be within num_embeddings"
+            assert padding_idx < weight.size(
+                0
+            ), "Padding_idx must be within num_embeddings"
         elif padding_idx < 0:
-            assert padding_idx >= -weight.size(0), "Padding_idx must be within num_embeddings"
+            assert padding_idx >= -weight.size(
+                0
+            ), "Padding_idx must be within num_embeddings"
             padding_idx = weight.size(0) + padding_idx
     else:
         padding_idx = -1
@@ -72,12 +81,21 @@ def custom_embedding(
     res = chunked_embedding(input, weight, padding_idx, scale_grad_by_freq, sparse)
     return res
 
+
 class CustomEmbedding(nn.Embedding):
     def forward(self, input: Tensor) -> Tensor:
-        print(f"{self.__class__.__name__} | input_ids dtype: {input.dtype}, shape: {input.shape}")
+        print(
+            f"{self.__class__.__name__} | input_ids dtype: {input.dtype}, shape: {input.shape}"
+        )
         return custom_embedding(
-            input, self.weight, self.padding_idx, self.max_norm,
-            self.norm_type, self.scale_grad_by_freq, self.sparse
+            input,
+            self.weight,
+            self.padding_idx,
+            self.max_norm,
+            self.norm_type,
+            self.scale_grad_by_freq,
+            self.sparse,
         )
 
-register_op('b l, v^ d^ -> b l d^')(custom_embedding)
+
+register_op("b l, v^ d^ -> b l d^")(custom_embedding)

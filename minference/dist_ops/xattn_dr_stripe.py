@@ -1,12 +1,11 @@
 # Copyright (c) 2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 import os
-import torch
-import torch.distributed as dist
 from typing import Any, Dict, Optional, Tuple
 
-from minference.ops.xattention_fa import xattn_estimate
-from minference.ops.pit_sparse_flash_attention_v3 import block_attn_bwd, block_attn_fwd
+import torch
+import torch.distributed as dist
+
 from minference.dist_ops.utils import (
     RingComm,
     get_inner_ring,
@@ -16,6 +15,8 @@ from minference.dist_ops.utils import (
     shuffle_striped_input,
     update_out_and_lse,
 )
+from minference.ops.pit_sparse_flash_attention_v3 import block_attn_bwd, block_attn_fwd
+from minference.ops.xattention_fa import xattn_estimate
 
 
 def xattn_dr_stripe_forward_inner(

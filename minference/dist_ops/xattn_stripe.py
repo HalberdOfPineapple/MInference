@@ -1,16 +1,23 @@
-import os
-import torch
-import triton
-import torch.distributed as dist
-from typing import List, Tuple, Dict, Any, Optional
+# Copyright (c) 2026 Microsoft
+# Licensed under The MIT License [see LICENSE for details]
 
-from minference.ops.xattention_fa import xattn_estimate
-from minference.ops.pit_sparse_flash_attention_v3 import block_attn_bwd, block_attn_fwd
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+import torch
+import torch.distributed as dist
+import triton
+
 from minference.dist_ops.utils import (
-    RingComm, update_out_and_lse,
-    shuffle_striped_input, recover_striped_output,
+    RingComm,
+    recover_striped_output,
     shuffle_block_mask_striped,
+    shuffle_striped_input,
+    update_out_and_lse,
 )
+from minference.ops.pit_sparse_flash_attention_v3 import block_attn_bwd, block_attn_fwd
+from minference.ops.xattention_fa import xattn_estimate
+
 
 def xattn_stripe_forward(
     process_group: dist.ProcessGroup,
@@ -37,7 +44,9 @@ def xattn_stripe_forward(
         block_causal = step == 0
 
         block_out, block_lse = block_attn_fwd(
-            q, k, v, 
+            q,
+            k,
+            v,
             block_mask=block_mask_step,
             softmax_scale=softmax_scale,
             granularity=granularity,
@@ -53,6 +62,7 @@ def xattn_stripe_forward(
     lse = lse.squeeze(dim=-1).transpose(1, 2)
     return out, lse
 
+
 def xattn_stripe_backward(
     process_group: dist.ProcessGroup,
     dout: torch.Tensor,  # [batch_size, num_tokens, num_qo_heads, head_dim]
@@ -65,8 +75,12 @@ def xattn_stripe_backward(
     softmax_scale: float,
     block_mask: torch.Tensor,  # [world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
     granularity: int = 128,
-    block_idx: Optional[torch.Tensor] = None, # [world_size, batch_size, num_qo_heads, num_blocks_local, num_blocks]
-    block_cnt: Optional[torch.Tensor] = None, # [world_size, batch_size, num_qo_heads, num_blocks_local]
+    block_idx: Optional[
+        torch.Tensor
+    ] = None,  # [world_size, batch_size, num_qo_heads, num_blocks_local, num_blocks]
+    block_cnt: Optional[
+        torch.Tensor
+    ] = None,  # [world_size, batch_size, num_qo_heads, num_blocks_local]
 ):
     kv_comm = RingComm(process_group)
     d_kv_comm = RingComm(process_group)
@@ -86,8 +100,13 @@ def xattn_stripe_backward(
         # --------------------------------
         # Block Mask
         step_dq, step_dk, step_dv = block_attn_bwd(
-            dout, q, k, v, out,
-            softmax_lse, softmax_scale,
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            softmax_scale,
             block_mask_step,
             granularity=granularity,
             deterministic=False,
@@ -119,6 +138,7 @@ def xattn_stripe_backward(
     d_kv_comm.wait()
     return dq.to(q.dtype), next_dk.to(q.dtype), next_dv.to(q.dtype)
 
+
 class XAttnStripeFunc(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -126,8 +146,8 @@ class XAttnStripeFunc(torch.autograd.Function):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        layer_idx, 
-        xattn_params, # Dict[str, Any] 
+        layer_idx,
+        xattn_params,  # Dict[str, Any]
         granularity,
         causal,
         softmax_scale,
@@ -135,9 +155,11 @@ class XAttnStripeFunc(torch.autograd.Function):
         deterministic,
         group,
     ):
-        if softmax_scale is None: softmax_scale = q.shape[-1] ** (-0.5)
+        if softmax_scale is None:
+            softmax_scale = q.shape[-1] ** (-0.5)
         _, block_mask = xattn_estimate(
-            q.transpose(1, 2), k.transpose(1, 2),
+            q.transpose(1, 2),
+            k.transpose(1, 2),
             block_size=granularity,
             ring_attn=True,
             **xattn_params
@@ -145,9 +167,15 @@ class XAttnStripeFunc(torch.autograd.Function):
 
         # ------------------------------------------------------------------
         # QKV Shuffling
-        q = shuffle_striped_input(to_send=q, dim=1, granularity=granularity, process_group=group)
-        k = shuffle_striped_input(to_send=k, dim=1, granularity=granularity, process_group=group)
-        v = shuffle_striped_input(to_send=v, dim=1, granularity=granularity, process_group=group)
+        q = shuffle_striped_input(
+            to_send=q, dim=1, granularity=granularity, process_group=group
+        )
+        k = shuffle_striped_input(
+            to_send=k, dim=1, granularity=granularity, process_group=group
+        )
+        v = shuffle_striped_input(
+            to_send=v, dim=1, granularity=granularity, process_group=group
+        )
 
         # ------------------------------------------------------------------
         # Index Shuffling
@@ -155,26 +183,33 @@ class XAttnStripeFunc(torch.autograd.Function):
 
         # if use_triton():
         #     block_idx, block_cnt = convert_blockmask(block_mask, block_size_M=granularity, block_size_N=64)
-        block_idx, block_cnt = None, None 
+        block_idx, block_cnt = None, None
         block_mask = block_mask.contiguous()
 
         # ----------------------------------------------
-        # Compute 
+        # Compute
         out, softmax_lse = xattn_stripe_forward(
             group,
-            q, k, v,
+            q,
+            k,
+            v,
             block_mask,
             layer_idx,
             softmax_scale,
             granularity=granularity,
-            block_idx=block_idx, block_cnt=block_cnt,
+            block_idx=block_idx,
+            block_cnt=block_cnt,
         )
 
         # ----------------------------------------------
         # Recover outputs
-        recovered_out = recover_striped_output(out, dim=1, granularity=granularity, process_group=group)
+        recovered_out = recover_striped_output(
+            out, dim=1, granularity=granularity, process_group=group
+        )
         if return_softmax:
-            recovered_softmax_lse = recover_striped_output(softmax_lse, dim=2, granularity=granularity, process_group=group)
+            recovered_softmax_lse = recover_striped_output(
+                softmax_lse, dim=2, granularity=granularity, process_group=group
+            )
 
         # -------------------------------
         # Variale Saving
@@ -198,34 +233,47 @@ class XAttnStripeFunc(torch.autograd.Function):
         granularity = ctx.granularity
         layer_idx = ctx.layer_idx
         group = ctx.group
-        
-        dout = shuffle_striped_input(to_send=dout, granularity=granularity, dim=1, process_group=group) 
+
+        dout = shuffle_striped_input(
+            to_send=dout, granularity=granularity, dim=1, process_group=group
+        )
 
         # ----------------------------------------------
         # Compute
         dq, dk, dv = xattn_stripe_backward(
             group,
-            dout, q, k, v, 
-            out, softmax_lse,
-            layer_idx, 
+            dout,
+            q,
+            k,
+            v,
+            out,
+            softmax_lse,
+            layer_idx,
             softmax_scale,
             block_mask,
             granularity,
-            block_idx=block_idx, block_cnt=block_cnt,
+            block_idx=block_idx,
+            block_cnt=block_cnt,
         )
-        
+
         # ----------------------------------------------
         # Recover
-        dq = recover_striped_output(dq, granularity=granularity, dim=1, process_group=group)
-        dk = recover_striped_output(dk, granularity=granularity, dim=1, process_group=group)
-        dv = recover_striped_output(dv, granularity=granularity, dim=1, process_group=group)
+        dq = recover_striped_output(
+            dq, granularity=granularity, dim=1, process_group=group
+        )
+        dk = recover_striped_output(
+            dk, granularity=granularity, dim=1, process_group=group
+        )
+        dv = recover_striped_output(
+            dv, granularity=granularity, dim=1, process_group=group
+        )
         return dq, dk, dv, None, None, None, None, None, None, None, None, None
 
 
 def xattn_stripe_qkvpacked_func(
     qkv: torch.Tensor,  # [batch_size, num_tokens, 3, num_heads, head_dim]
     layer_idx: int,
-    xattn_params: Dict[str, Any], 
+    xattn_params: Dict[str, Any],
     granularity: int = 128,
     dropout_p: int = 0.0,
     softmax_scale: float = None,
@@ -260,7 +308,7 @@ def xattn_stripe_kvpacked_func(
     q: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]
     kv: torch.Tensor,  # [batch_size, num_tokens, 2, num_heads, head_dim]
     layer_idx: int,
-    xattn_params: Dict[str, Any], 
+    xattn_params: Dict[str, Any],
     granularity: int = 128,
     dropout_p: int = 0.0,
     softmax_scale: float = None,
@@ -292,12 +340,12 @@ def xattn_stripe_kvpacked_func(
     )
 
 
-def xattn_stripe_func( # the one used for nnscaler training
+def xattn_stripe_func(  # the one used for nnscaler training
     q: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]
     k: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]
     v: torch.Tensor,  # [batch_size, num_tokens, num_heads, head_dim]
     layer_idx: int,
-    xattn_params: Dict[str, Any], 
+    xattn_params: Dict[str, Any],
     granularity: int = 128,
     dropout_p: int = 0.0,
     softmax_scale: float = None,
@@ -315,7 +363,9 @@ def xattn_stripe_func( # the one used for nnscaler training
     assert not deterministic
 
     return XAttnStripeFunc.apply(
-        q, k, v,
+        q,
+        k,
+        v,
         layer_idx,
         xattn_params,
         granularity,

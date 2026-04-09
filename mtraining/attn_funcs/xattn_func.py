@@ -16,9 +16,9 @@ from nnscaler.ir.operator import IRFwOperation
 from nnscaler.runtime.device import DeviceGroup
 from torch import Tensor
 
-from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
-from minference.dist_ops.xattn_stripe import xattn_stripe_func
 from minference.dist_ops.xattn_dr_stripe import xattn_dr_stripe_func
+from minference.dist_ops.xattn_stripe import xattn_stripe_func
+from minference.dist_ops.xattn_zigzag import xattn_zigzag_func
 from minference.ops.xattention_fa import xattn_flash_attn_func
 
 
@@ -198,6 +198,7 @@ def wrapped_xattn_zigzag_func(
         group=group,
     ).contiguous()
 
+
 def wrapped_xattn_stripe_func(
     q: Tensor,
     k: Tensor,
@@ -224,7 +225,9 @@ def wrapped_xattn_stripe_func(
     xattn_params = copy.copy(xattn_params)
     xattn_params.pop("chunk_size", None)
     return xattn_stripe_func(
-        q, k, v,
+        q,
+        k,
+        v,
         layer_idx,
         xattn_params,
         granularity,
@@ -233,6 +236,7 @@ def wrapped_xattn_stripe_func(
         causal=causal,
         group=group,
     ).contiguous()
+
 
 def wrapped_xattn_dr_stripe_func(
     q: Tensor,
@@ -260,7 +264,9 @@ def wrapped_xattn_dr_stripe_func(
     xattn_params = copy.copy(xattn_params)
     xattn_params.pop("chunk_size", None)
     return xattn_dr_stripe_func(
-        q, k, v,
+        q,
+        k,
+        v,
         layer_idx,
         xattn_params,
         granularity,
@@ -277,7 +283,6 @@ XATTN_IMPLEMENTATIONS: Dict[str, Callable] = {
     "stripe": wrapped_xattn_stripe_func,
     "dr_stripe": wrapped_xattn_dr_stripe_func,
 }
-
 
 
 def xattn_attn_anno(query_states, key_states, value_states, *args, **kwargs) -> str:

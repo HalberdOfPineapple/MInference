@@ -1,16 +1,11 @@
-# Copyright (c) 2024-2025 Microsoft
+# Copyright (c) 2024-2026 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 
 import json
 import os
 
 from .minference_configuration import MInferenceConfig
-from .patch import (
-    minference_patch,
-    minference_patch_vllm,
-    new_patch,
-    patch_hf,
-)
+from .patch import minference_patch, minference_patch_vllm, new_patch, patch_hf
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 

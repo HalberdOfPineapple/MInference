@@ -67,7 +67,8 @@ class SparseRatioCollector:
         """
         if not self.enabled:
             return
-        from mtraining.trainer import get_iter_cnt, get_iter_batch_idx
+        from mtraining.trainer import get_iter_batch_idx, get_iter_cnt
+
         rank = dist.get_rank(group)
         iter_cnt = get_iter_cnt(rank)
         sample_idx = get_iter_batch_idx(rank, iter_cnt)
@@ -86,6 +87,7 @@ class SparseRatioCollector:
             return
 
         import json
+
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, f"sparse_ratio_rank_{rank}.json")
         payload: Dict[int, Dict[int, float]] = {}
@@ -99,11 +101,9 @@ class SparseRatioCollector:
 def compute_sparse_ratio(
     block_mask: torch.Tensor,  # [world_size, batch_size, num_qo_heads, num_blocks, num_blocks]
     bar_cnt: torch.Tensor,  # [batch_size, num_qo_heads, num_blocks, world_size + 1]
-
     num_tokens_local: int,
     world_size: int,
     granularity: int,
-
     process_group: dist.ProcessGroup,
 ):
     batch_size, num_qo_heads = block_mask.shape[1:3]
@@ -115,16 +115,21 @@ def compute_sparse_ratio(
     num_active_blocks_global = block_mask.sum()
     dist.all_reduce(num_active_blocks_global, op=dist.ReduceOp.SUM, group=process_group)
     num_active_block_entries = num_active_blocks_global.item() * block_area
-    num_active_block_entries -= num_blocks_global * block_area * batch_size * num_qo_heads / 2.0
+    num_active_block_entries -= (
+        num_blocks_global * block_area * batch_size * num_qo_heads / 2.0
+    )
 
     num_active_bars_global = bar_cnt[..., -1].sum()
     dist.all_reduce(num_active_bars_global, op=dist.ReduceOp.SUM, group=process_group)
     num_active_bar_entries = num_active_bars_global.item() * granularity
 
     num_active_entries = num_active_block_entries + num_active_bar_entries
-    total_entries_global = num_tokens_global * num_tokens_global * batch_size * num_qo_heads / 2.0
+    total_entries_global = (
+        num_tokens_global * num_tokens_global * batch_size * num_qo_heads / 2.0
+    )
     sparse_ratio = 1 - num_active_entries / total_entries_global
     return sparse_ratio
+
 
 def compute_sparse_ratio_xattn(
     block_mask: torch.Tensor,  # (batch_size, head_num, q_local_block_num, k_global_block_num)
@@ -141,11 +146,22 @@ def compute_sparse_ratio_xattn(
     num_active_blocks_global = num_active_blocks_global.item()
 
     num_active_entries = num_active_blocks_global * block_size * block_size
-    num_active_entries -= num_blocks_global * block_size * block_size * batch_size * head_num / 2.0
+    num_active_entries -= (
+        num_blocks_global * block_size * block_size * batch_size * head_num / 2.0
+    )
 
-    total_entries = num_blocks_global * num_blocks_global * block_size * block_size * batch_size * head_num / 2.0
+    total_entries = (
+        num_blocks_global
+        * num_blocks_global
+        * block_size
+        * block_size
+        * batch_size
+        * head_num
+        / 2.0
+    )
     sparse_ratio = 1 - num_active_entries / total_entries
     return sparse_ratio
+
 
 @cache
 def _get_default_args(func):
@@ -357,6 +373,7 @@ def update_out_and_lse(
 
     return out, lse
 
+
 PROCESS_GROUPS: Dict[str, dist.ProcessGroup] = {}
 _RING_COMM_CACHE: Dict[tuple, "RingComm"] = {}
 
@@ -402,11 +419,15 @@ class RingComm:
             if "inner" in PROCESS_GROUPS:
                 self._process_group_inner = PROCESS_GROUPS["inner"]
             else:
-                nccl_options = dist.ProcessGroupNCCL.Options(is_high_priority_stream=True)
-                self._process_group_inner = dist.new_group(
-                    backend="nccl", pg_options=nccl_options, use_local_synchronization=True
+                nccl_options = dist.ProcessGroupNCCL.Options(
+                    is_high_priority_stream=True
                 )
-                nccl_options.config.max_ctas = 128
+                self._process_group_inner = dist.new_group(
+                    backend="nccl",
+                    pg_options=nccl_options,
+                    use_local_synchronization=True,
+                )
+                nccl_options.config.max_ctas = 255
                 nccl_options.config.min_ctas = 1
                 PROCESS_GROUPS["inner"] = self._process_group_inner
             # self._process_group_inner = process_group
@@ -414,14 +435,17 @@ class RingComm:
             if "outer" in PROCESS_GROUPS:
                 self._process_group_outer = PROCESS_GROUPS["outer"]
             else:
-                nccl_options = dist.ProcessGroupNCCL.Options(is_high_priority_stream=True)
+                nccl_options = dist.ProcessGroupNCCL.Options(
+                    is_high_priority_stream=True
+                )
                 nccl_options.config.max_ctas = 1
                 nccl_options.config.min_ctas = 1
                 self._process_group_outer = dist.new_group(
-                    backend="nccl", pg_options=nccl_options, use_local_synchronization=True
+                    backend="nccl",
+                    pg_options=nccl_options,
+                    use_local_synchronization=True,
                 )
                 PROCESS_GROUPS["outer"] = self._process_group_outer
-
 
     def reset(self):
         """Clear per-round mutable state so a cached instance can be reused."""
@@ -453,7 +477,7 @@ class RingComm:
         if key not in _RING_COMM_CACHE:
             _RING_COMM_CACHE[key] = cls(process_group, zigzag, ring_list, double_ring)
         return _RING_COMM_CACHE[key].reset()
-        
+
     @property
     def process_group(self):
         if self.double_ring_tag == "inner":
@@ -765,26 +789,29 @@ def shuffle_block_mask_striped(
     # ---------------------------------------
     # Shuffle Query chunks
     block_mask = shuffle_striped_input(
-        block_mask, 
-        granularity=1, dim=2, 
-        process_group=group
+        block_mask, granularity=1, dim=2, process_group=group
     ).to(block_mask.device)
 
     # ---------------------------------------
     # Shuffle Key chunks
-    block_mask = block_mask.reshape((batch_size, num_qo_heads, num_blocks_per_rank, -1, world_size * 1))
-    block_mask = block_mask.swapaxes(-2, -1) # local All2All
-    block_mask = block_mask.reshape((batch_size, num_qo_heads, num_blocks_per_rank, -1)).contiguous()
-    block_mask_slices = block_mask.split(num_blocks_per_rank, dim=-1)  # world_size x [batch_size, num_qo_heads, num_blocks_per_rank, num_blocks_per_rank]
+    block_mask = block_mask.reshape(
+        (batch_size, num_qo_heads, num_blocks_per_rank, -1, world_size * 1)
+    )
+    block_mask = block_mask.swapaxes(-2, -1)  # local All2All
+    block_mask = block_mask.reshape(
+        (batch_size, num_qo_heads, num_blocks_per_rank, -1)
+    ).contiguous()
+    block_mask_slices = block_mask.split(
+        num_blocks_per_rank, dim=-1
+    )  # world_size x [batch_size, num_qo_heads, num_blocks_per_rank, num_blocks_per_rank]
 
     shuffled_block_mask_list = []
     for i in range(world_size):
         rank_src = (rank - i + world_size) % world_size
         shuffled_block_mask_list.append(block_mask_slices[rank_src])
-    
+
     block_mask = torch.stack(shuffled_block_mask_list, dim=0).contiguous()
     return block_mask
-    
 
 
 # --------------------------------------------------------------------
